@@ -1,0 +1,26 @@
+plants:
+  - id: office_golden_pothos
+    plant_entity: plant.office_golden_pothos
+    name: Golden Pothos
+    location: Office
+    species: golden_pothos
+    sensors:
+      moisture: sensor.office_golden_pothos_moisture
+      temperature: sensor.office_golden_pothos_temperature
+      battery: sensor.office_golden_pothos_battery
+      brightness: sensor.office_illuminance
+    watering:
+      switch: switch.office_watering_kit
+      max_seconds: 8
+      cooldown_hours: 48
+
+  - id: sunroom_ficus
+    plant_entity: plant.sunroom_ficus
+    name: Ficus Altissima
+    location: Sun room
+    species: ficus_altissima
+    sensors:
+      moisture: sensor.sunroom_ficus_moisture
+      temperature: sensor.sunroom_ficus_temperature
+      battery: sensor.sunroom_ficus_battery
+

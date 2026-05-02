@@ -1,0 +1,33 @@
+[project]
+name = "plant-monitor"
+version = "0.1.0"
+description = "Dockerized Home Assistant plant monitoring service."
+requires-python = ">=3.11"
+dependencies = [
+  "aiohttp>=3.9.0",
+  "python-dotenv>=1.0.0",
+  "PyYAML>=6.0.0",
+  "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+plant-monitor = "plant_monitor.main:main"
+plant-discover = "plant_monitor.discovery:main"
+plant-status = "plant_monitor.status:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["plant_monitor*"]

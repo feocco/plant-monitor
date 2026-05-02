@@ -1,0 +1,12 @@
+.env
+plants.yaml
+plants.discovered.yaml
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+*.egg-info/
+data/
+logs/
