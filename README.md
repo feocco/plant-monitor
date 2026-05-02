@@ -1,95 +1,127 @@
 # Plant Monitor
 
-A small Home Assistant companion service for low-maintenance plant monitoring.
-It connects to Home Assistant over the WebSocket API, watches Zigbee plant sensor
-updates, scores each plant as green/orange/red, sends Home Assistant
-notifications, and only waters after an explicit guarded confirmation.
+A small Home Assistant companion service for plant monitoring.
 
-## Setup
+It uses Home Assistant `plant.*` entities as the source of truth, watches the raw
+sensor entities for freshness, sends readable notifications, and only waters
+after an explicit confirmation action.
 
-1. Fill in `.env` with your Home Assistant URL and a long-lived access token.
-   Set `HA_PLANTS_DASHBOARD_URL` to the dashboard path or full URL that should
-   open when tapping plant notifications.
-   Use `plants.example.yaml` as the starting point for your local `plants.yaml`.
-2. Run discovery to propose entity mappings from live Home Assistant `plant.*`
-   entities:
+## Usage
 
-   ```bash
-   python -m plant_monitor.discovery
-   ```
+Install locally:
 
-3. Review `plants.discovered.yaml`. Discovery writes a review file by default so
-   it does not overwrite your working config with uncertain matches.
-4. Once it looks right, either edit `plants.yaml` manually or run:
+```bash
+python -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+```
 
-   ```bash
-   python -m plant_monitor.discovery --write
-   ```
+Create local config:
 
-5. Run locally:
+```bash
+cp .env.example .env
+cp plants.example.yaml plants.yaml
+```
 
-   ```bash
-   python -m plant_monitor.main
-   ```
+Fill in `.env` with:
 
-6. To check the current status without starting the long-running monitor:
+- `HA_URL`
+- `HA_LONG_LIVED_TOKEN`
+- `HA_NOTIFY_SERVICE`
+- `HA_PLANTS_DASHBOARD_URL`
 
-   ```bash
-   python -m plant_monitor.status
-   ```
+Use the CLI:
 
-7. To send a one-time test digest through Home Assistant notify:
+```bash
+plant-discover --help
+plant-status --help
+plant-monitor --help
+```
 
-   ```bash
-   python -m plant_monitor.status --notify
-   ```
+Typical first run:
 
-8. Or run in Docker:
+```bash
+plant-discover
+plant-status
+plant-status --notify
+plant-monitor
+```
 
-   ```bash
-   docker compose up --build
-   ```
+Discovery writes `plants.discovered.yaml` by default. Review it before replacing
+your local `plants.yaml`.
 
-## Build and Deploy
+## CLI
 
-Build a local image:
+`plant-discover`
+
+Discovers live Home Assistant `plant.*` entities and proposes a clean
+`plants.discovered.yaml` file. Use `--write` when you want discovery to replace
+the configured `plants.yaml`.
+
+`plant-status`
+
+Prints the current plant status as a color-coded table. Add `--notify` to send a
+one-time Home Assistant notification digest.
+
+`plant-monitor`
+
+Runs the long-lived monitor. It listens for Home Assistant state changes,
+sends individual plant alerts, handles notification actions, and runs the weekly
+digest.
+
+## Build
+
+Build a local Docker image:
 
 ```bash
 scripts/build_image.sh
 ```
 
-Deploy to a remote Docker server over SSH:
+Docker registry publishing is intentionally not wired yet. The deployment flow
+will be updated once the target registry is available.
 
-```bash
-REMOTE_DOCKER_HOST=user@nas.local \
-REMOTE_APP_DIR=/opt/plant-monitor \
-scripts/deploy_remote.sh
-```
+## Docs
 
-The deploy script copies local `.env` and `plants.yaml` to the server so the
-container can run, but those files are ignored by git and should not be pushed to
-GitHub.
+### Configuration
 
-## Home Assistant Notes
+Local-only files are ignored by git:
 
-The service uses the Home Assistant `plant` integration as the canonical source
-for one clean object per plant. Raw sensors are attached to that object for
-freshness checks and trend logic. The service uses `HA_NOTIFY_SERVICE` for
-notifications, for example `notify.mobile_app_your_phone`. Watering buttons use
-mobile app notification actions; tapping a watering action is detected from Home
-Assistant's `mobile_app_notification_action` event stream. A small HTTP server
-also exposes `/health` and guarded `/water/{plant_id}` endpoints for future
-webhook-style use.
+- `.env`
+- `plants.yaml`
+- `plants.discovered.yaml`
+- `data/`
 
-Individual alert notifications include an `Open Plants` action and a `Delay 24h`
-action. The delay duration is controlled by `ALERT_SNOOZE_HOURS`. Alerts repeat
-after `ALERT_REPEAT_HOURS` if the plant is still unhealthy, and normal numeric
-sensor drift does not count as a new alert.
+Use `.env.example` and `plants.example.yaml` as templates.
 
-## Safety Defaults
+### Data Model
 
-- Stale warning after 12 hours without a sensor update.
-- Stale red status after 24 hours without a sensor update.
-- Watering is never automatic in v1.
-- Watering confirmations are blocked if the moisture sensor is stale, the pump
-  is missing, the pump cooldown is active, or the requested run time is too long.
+Each plant is one object in `plants.yaml`:
+
+- `plant_entity`: canonical Home Assistant `plant.*` entity
+- `sensors`: raw moisture, temperature, battery, brightness, etc.
+- `watering`: optional switch plus duration/cooldown
+- `thresholds`: optional per-plant overrides
+
+Species defaults live in `plant_monitor/thresholds.py`.
+
+### Notifications
+
+Individual alerts are sent when a plant becomes orange/red or watering is
+recommended. Repeated alerts use a backoff controlled by `ALERT_REPEAT_HOURS`.
+
+Notification actions:
+
+- `Open Plants`: opens `HA_PLANTS_DASHBOARD_URL`
+- `Delay 24h`: suppresses individual alerts for that plant
+- watering confirmation appears only when watering is recommended and a watering
+  switch is configured
+
+### Safety
+
+- Moisture/temperature/humidity stale warning: 12 hours
+- Moisture/temperature/humidity stale red: 24 hours
+- Battery stale warning: 5 days
+- Battery stale red: 10 days
+- Watering is never automatic
+- Watering is blocked if the moisture sensor is stale, the pump is missing, the
+  pump cooldown is active, or the requested run time exceeds the configured cap
+
