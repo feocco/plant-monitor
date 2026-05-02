@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from plant_monitor.monitor import _alert_key
-from plant_monitor.models import Issue, PlantStatus, Severity
+from datetime import UTC, datetime, timedelta
+
+from plant_monitor.monitor import _alert_key, _next_alert_summary, _status_counts
+from plant_monitor.models import EntityMap, Issue, PlantConfig, PlantStatus, Severity
+from plant_monitor.runtime_state import RuntimeState
 
 
 def test_alert_key_ignores_numeric_value_drift_for_same_issue() -> None:
@@ -21,3 +24,52 @@ def test_alert_key_ignores_numeric_value_drift_for_same_issue() -> None:
     )
 
     assert _alert_key(first) == _alert_key(second)
+
+
+def test_status_counts_groups_green_orange_red() -> None:
+    statuses = [
+        PlantStatus("green", Severity.GREEN, (), False, "green"),
+        PlantStatus("orange", Severity.ORANGE, (), False, "orange"),
+        PlantStatus("red", Severity.RED, (), False, "red"),
+        PlantStatus("red-water", Severity.RED, (), True, "red"),
+    ]
+
+    counts = _status_counts(statuses)
+
+    assert counts[Severity.GREEN] == 1
+    assert counts[Severity.ORANGE] == 1
+    assert counts[Severity.RED] == 2
+
+
+def test_next_alert_summary_reports_earliest_repeat() -> None:
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    plant = _plant()
+    status = PlantStatus(
+        plant.id,
+        Severity.RED,
+        (Issue(Severity.RED, "moisture", "moisture is low."),),
+        False,
+        "red",
+    )
+    state = RuntimeState(last_alert_sent_at={plant.id: now - timedelta(hours=22, minutes=30)})
+
+    assert _next_alert_summary([plant], [status], state, repeat_hours=24, now=now) == "in 1h 30m"
+
+
+def test_next_alert_summary_reports_none_when_all_green() -> None:
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    plant = _plant()
+    status = PlantStatus(plant.id, Severity.GREEN, (), False, "green")
+
+    assert _next_alert_summary([plant], [status], RuntimeState(), repeat_hours=24, now=now) == "none"
+
+
+def _plant() -> PlantConfig:
+    return PlantConfig(
+        id="office_shelf_golden_pothos",
+        name="Golden Pothos",
+        location="Office shelf",
+        species="golden_pothos",
+        plant_entity="plant.office_shelf_golden_pothos",
+        entities=EntityMap(),
+    )

@@ -58,7 +58,8 @@ class PlantMonitor:
             LOGGER.info("Clearing previous alert memory before first real notification run")
             self.state.last_alert_label.clear()
         self.state.last_dry_run = self.config.dry_run
-        await self.evaluate_and_notify()
+        statuses = await self.evaluate_and_notify()
+        self._log_startup_health(statuses)
 
         try:
             await asyncio.gather(self._reconcile_loop(), self._weekly_loop())
@@ -217,11 +218,76 @@ class PlantMonitor:
             return True
         return now - sent_at.astimezone(UTC) >= timedelta(hours=self.config.alert_repeat_hours)
 
+    def _log_startup_health(self, statuses: list[PlantStatus]) -> None:
+        counts = _status_counts(statuses)
+        LOGGER.info(
+            "Startup plant health: green=%s orange=%s red=%s next_alert=%s",
+            counts[Severity.GREEN],
+            counts[Severity.ORANGE],
+            counts[Severity.RED],
+            _next_alert_summary(self.plants, statuses, self.state, self.config.alert_repeat_hours),
+        )
+
 
 def _alert_key(status: PlantStatus) -> str:
     issue_key = "|".join(sorted(_issue_key(issue) for issue in status.issues))
     watering = "water" if status.watering_recommended else "no-water"
     return f"{status.label.label}:{watering}:{issue_key}"
+
+
+def _status_counts(statuses: list[PlantStatus]) -> dict[Severity, int]:
+    return {
+        Severity.GREEN: sum(1 for status in statuses if status.label == Severity.GREEN),
+        Severity.ORANGE: sum(1 for status in statuses if status.label == Severity.ORANGE),
+        Severity.RED: sum(1 for status in statuses if status.label == Severity.RED),
+    }
+
+
+def _next_alert_summary(
+    plants: list[PlantConfig],
+    statuses: list[PlantStatus],
+    state: RuntimeState,
+    repeat_hours: int,
+    now: datetime | None = None,
+) -> str:
+    now = now or datetime.now(UTC)
+    next_times: list[datetime] = []
+    for plant, status in zip(plants, statuses, strict=True):
+        if not should_send_urgent(status):
+            continue
+
+        snoozed_until = state.alert_snoozed_until.get(plant.id)
+        if snoozed_until and now < snoozed_until.astimezone(UTC):
+            next_times.append(snoozed_until.astimezone(UTC))
+            continue
+
+        sent_at = state.last_alert_sent_at.get(plant.id)
+        if sent_at is None:
+            next_times.append(now)
+            continue
+
+        next_times.append(sent_at.astimezone(UTC) + timedelta(hours=repeat_hours))
+
+    if not next_times:
+        return "none"
+    next_alert_at = min(next_times)
+    if next_alert_at <= now:
+        return "now"
+    return f"in {_format_duration(next_alert_at - now)}"
+
+
+def _format_duration(value: timedelta) -> str:
+    total_minutes = max(1, int(value.total_seconds() // 60))
+    days, remainder = divmod(total_minutes, 60 * 24)
+    hours, minutes = divmod(remainder, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes and not days:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "0m"
 
 
 def _issue_key(issue) -> str:
