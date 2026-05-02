@@ -12,5 +12,4 @@ RUN pip install --no-cache-dir .
 
 VOLUME ["/app/data"]
 
-CMD ["plant-monitor"]
-
+CMD ["plant", "monitor"]
