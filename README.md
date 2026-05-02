@@ -23,13 +23,6 @@ Or use the local install helper:
 scripts/install_local.sh
 ```
 
-Create local config:
-
-```bash
-cp .env.example .env
-cp plants.example.yaml plants.yaml
-```
-
 Fill in `.env` with:
 
 - `HA_URL`
@@ -37,32 +30,16 @@ Fill in `.env` with:
 - `HA_NOTIFY_SERVICE`
 - `HA_PLANTS_DASHBOARD_URL`
 
-Use the CLI:
-
-```bash
-plant --help
-plant discover --help
-plant status --help
-plant monitor --help
-```
-
-If the virtualenv is not activated, call the CLI directly:
-
-```bash
-.venv/bin/plant --help
-```
-
 Typical first run:
 
 ```bash
+# Writes plants.discovered.yaml by default. Review it before replacing plants.yaml.
 plant discover
+
 plant status
 plant status --notify
 plant monitor
 ```
-
-Discovery writes `plants.discovered.yaml` by default. Review it before replacing
-your local `plants.yaml`.
 
 ## CLI
 
@@ -105,7 +82,8 @@ Local-only files are ignored by git:
 - `plants.discovered.yaml`
 - `data/`
 
-Use `.env.example` and `plants.example.yaml` as templates.
+Use `.env.example` as the environment template. `plants.yaml` is generated from
+Home Assistant discovery and is intentionally ignored by git.
 
 ### Data Model
 
@@ -115,6 +93,8 @@ Each plant is one object in `plants.yaml`:
 - `sensors`: raw moisture, temperature, battery, brightness, etc.
 - `watering`: optional switch plus duration/cooldown
 - `thresholds`: optional per-plant overrides
+- `species`: selects fallback thresholds when Home Assistant does not expose
+  plant-specific threshold data
 
 Species defaults live in `plant_monitor/thresholds.py`.
 
