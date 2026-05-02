@@ -32,18 +32,19 @@ Fill in `.env` with:
 Use the CLI:
 
 ```bash
-plant-discover --help
-plant-status --help
-plant-monitor --help
+plant --help
+plant discover --help
+plant status --help
+plant monitor --help
 ```
 
 Typical first run:
 
 ```bash
-plant-discover
-plant-status
-plant-status --notify
-plant-monitor
+plant discover
+plant status
+plant status --notify
+plant monitor
 ```
 
 Discovery writes `plants.discovered.yaml` by default. Review it before replacing
@@ -51,18 +52,18 @@ your local `plants.yaml`.
 
 ## CLI
 
-`plant-discover`
+`plant discover`
 
 Discovers live Home Assistant `plant.*` entities and proposes a clean
 `plants.discovered.yaml` file. Use `--write` when you want discovery to replace
 the configured `plants.yaml`.
 
-`plant-status`
+`plant status`
 
 Prints the current plant status as a color-coded table. Add `--notify` to send a
 one-time Home Assistant notification digest.
 
-`plant-monitor`
+`plant monitor`
 
 Runs the long-lived monitor. It listens for Home Assistant state changes,
 sends individual plant alerts, handles notification actions, and runs the weekly
@@ -115,7 +116,7 @@ Notification actions:
 - watering confirmation appears only when watering is recommended and a watering
   switch is configured
 
-### Safety
+### Thresholds and Automation
 
 - Moisture/temperature/humidity stale warning: 12 hours
 - Moisture/temperature/humidity stale red: 24 hours
@@ -124,4 +125,3 @@ Notification actions:
 - Watering is never automatic
 - Watering is blocked if the moisture sensor is stale, the pump is missing, the
   pump cooldown is active, or the requested run time exceeds the configured cap
-

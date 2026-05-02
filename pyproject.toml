@@ -17,9 +17,7 @@ dev = [
 ]
 
 [project.scripts]
-plant-monitor = "plant_monitor.main:main"
-plant-discover = "plant_monitor.discovery:main"
-plant-status = "plant_monitor.status:main"
+plant = "plant_monitor.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
