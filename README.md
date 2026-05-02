@@ -11,8 +11,16 @@ after an explicit confirmation action.
 Install locally:
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
+source .venv/bin/activate
+plant --help
+```
+
+Or use the local install helper:
+
+```bash
+scripts/install_local.sh
 ```
 
 Create local config:
@@ -36,6 +44,12 @@ plant --help
 plant discover --help
 plant status --help
 plant monitor --help
+```
+
+If the virtualenv is not activated, call the CLI directly:
+
+```bash
+.venv/bin/plant --help
 ```
 
 Typical first run:

@@ -1,5 +1,14 @@
 # Scripts
 
+## Install locally
+
+```bash
+scripts/install_local.sh
+```
+
+The script creates `.venv`, installs the package, and prints the activation
+command needed for `plant` to be available on your shell `PATH`.
+
 ## Build locally
 
 ```bash
@@ -29,4 +38,3 @@ Remote requirements:
 - SSH access from this Mac
 - Docker and Docker Compose plugin installed on the remote host
 - permission for the SSH user to run Docker
-
