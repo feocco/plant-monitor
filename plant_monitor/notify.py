@@ -61,6 +61,13 @@ class Notifier:
             data={"tag": f"plant-monitor-water-{plant.id}", "group": "plant-monitor"},
         )
 
+    async def send_watering_lookback(self, plant: PlantConfig, message: str) -> None:
+        await self._send(
+            title=f"Watering follow-up: {plant.location} {plant.name}",
+            message=message,
+            data={"tag": f"plant-monitor-water-lookback-{plant.id}", "group": "plant-monitor"},
+        )
+
     async def send_alert_snoozed(self, plant: PlantConfig, message: str) -> None:
         await self._send(
             title=f"Plant alerts delayed: {plant.location} {plant.name}",

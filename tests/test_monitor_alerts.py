@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from plant_monitor.monitor import _alert_key, _next_alert_summary, _status_counts
+from plant_monitor.monitor import (
+    SensorReading,
+    _alert_key,
+    _next_alert_summary,
+    _status_counts,
+    _watering_lookback_message,
+)
 from plant_monitor.models import EntityMap, Issue, PlantConfig, PlantStatus, Severity
 from plant_monitor.runtime_state import RuntimeState
+
+NOW = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
 
 
 def test_alert_key_ignores_numeric_value_drift_for_same_issue() -> None:
@@ -62,6 +70,22 @@ def test_next_alert_summary_reports_none_when_all_green() -> None:
     status = PlantStatus(plant.id, Severity.GREEN, (), False, "green")
 
     assert _next_alert_summary([plant], [status], RuntimeState(), repeat_hours=24, now=now) == "none"
+
+
+def test_watering_lookback_message_reports_sensor_movement() -> None:
+    before = [
+        SensorReading("moisture", "sensor.moisture", 12.0, NOW),
+        SensorReading("humidity", "sensor.humidity", 41.0, NOW),
+    ]
+    after = [
+        SensorReading("moisture", "sensor.moisture", 15.5, NOW + timedelta(hours=1)),
+        SensorReading("humidity", "sensor.humidity", 41.2, NOW + timedelta(hours=1)),
+    ]
+
+    message = _watering_lookback_message(before, after, timedelta(hours=1))
+
+    assert "moisture: 12.0 -> 15.5 (+3.5)" in message
+    assert "Result: measurable sensor movement detected." in message
 
 
 def _plant() -> PlantConfig:

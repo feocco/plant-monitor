@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,16 @@ from plant_monitor.runtime_state import RuntimeState
 from plant_monitor.web import CallbackServer
 
 LOGGER = logging.getLogger(__name__)
+WATERING_LOOKBACK_DELAYS = (timedelta(hours=1), timedelta(hours=4))
+WATERING_CHANGE_THRESHOLD = 1.0
+
+
+@dataclass(frozen=True)
+class SensorReading:
+    sensor: str
+    entity_id: str
+    value: float | None
+    last_updated: datetime | None
 
 
 class PlantMonitor:
@@ -37,6 +48,7 @@ class PlantMonitor:
             self.handle_water_request,
         )
         self._plant_by_id = {plant.id: plant for plant in plants}
+        self._lookback_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self) -> None:
         while True:
@@ -64,6 +76,11 @@ class PlantMonitor:
         try:
             await asyncio.gather(self._reconcile_loop(), self._weekly_loop())
         finally:
+            pending_lookbacks = list(self._lookback_tasks)
+            for task in pending_lookbacks:
+                task.cancel()
+            if pending_lookbacks:
+                await asyncio.gather(*pending_lookbacks, return_exceptions=True)
             await self.callback_server.stop()
             await self.ha.close()
 
@@ -143,6 +160,15 @@ class PlantMonitor:
         watered_at = datetime.now(UTC)
         self.state.last_watered_at[plant.id] = watered_at
         self.state.save(self.config.state_path)
+        baseline = _watering_snapshot(plant, self.states)
+        LOGGER.info(
+            "Watering event recorded: plant=%s pump=%s seconds=%s baseline=%s",
+            plant.id,
+            plant.entities.pump,
+            decision.seconds,
+            _format_snapshot_for_log(baseline),
+        )
+        self._schedule_watering_lookbacks(plant, watered_at, baseline)
         message = f"Watered for {decision.seconds} seconds."
         await self.notifier.send_watering_result(plant, message)
         return 200, {"allowed": True, "seconds": decision.seconds}
@@ -228,6 +254,70 @@ class PlantMonitor:
             _next_alert_summary(self.plants, statuses, self.state, self.config.alert_repeat_hours),
         )
 
+    def _schedule_watering_lookbacks(
+        self,
+        plant: PlantConfig,
+        watered_at: datetime,
+        baseline: list[SensorReading],
+    ) -> None:
+        for delay in WATERING_LOOKBACK_DELAYS:
+            task = asyncio.create_task(
+                self._watering_lookback(plant, watered_at, baseline, delay),
+                name=f"watering-lookback-{plant.id}-{int(delay.total_seconds())}",
+            )
+            self._lookback_tasks.add(task)
+            task.add_done_callback(self._finish_lookback_task)
+            LOGGER.info(
+                "Scheduled watering lookback: plant=%s delay=%s",
+                plant.id,
+                _format_duration(delay),
+            )
+
+    def _finish_lookback_task(self, task: asyncio.Task[None]) -> None:
+        self._lookback_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error:
+            LOGGER.error(
+                "Watering lookback task failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    async def _watering_lookback(
+        self,
+        plant: PlantConfig,
+        watered_at: datetime,
+        baseline: list[SensorReading],
+        delay: timedelta,
+    ) -> None:
+        try:
+            await asyncio.sleep(delay.total_seconds())
+            self.states = await self.ha.get_states()
+            current = _watering_snapshot(plant, self.states)
+            message = _watering_lookback_message(baseline, current, delay)
+            LOGGER.info(
+                "Watering lookback complete: plant=%s watered_at=%s delay=%s result=%s current=%s",
+                plant.id,
+                watered_at.isoformat(),
+                _format_duration(delay),
+                message.replace("\n", " | "),
+                _format_snapshot_for_log(current),
+            )
+            await self.notifier.send_watering_lookback(plant, message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            LOGGER.exception(
+                "Watering lookback failed: plant=%s delay=%s",
+                plant.id,
+                _format_duration(delay),
+            )
+            await self.notifier.send_watering_lookback(
+                plant,
+                f"Watering research after {_format_duration(delay)} failed: {error}",
+            )
+
 
 def _alert_key(status: PlantStatus) -> str:
     issue_key = "|".join(sorted(_issue_key(issue) for issue in status.issues))
@@ -288,6 +378,79 @@ def _format_duration(value: timedelta) -> str:
     if minutes and not days:
         parts.append(f"{minutes}m")
     return " ".join(parts) or "0m"
+
+
+def _watering_snapshot(plant: PlantConfig, states: dict[str, EntityState]) -> list[SensorReading]:
+    readings: list[SensorReading] = []
+    for sensor, entity_id in (
+        ("moisture", plant.entities.moisture),
+        ("humidity", plant.entities.humidity),
+    ):
+        if not entity_id:
+            continue
+        state = states.get(entity_id)
+        readings.append(
+            SensorReading(
+                sensor=sensor,
+                entity_id=entity_id,
+                value=_float_state(state),
+                last_updated=state.last_updated if state else None,
+            )
+        )
+    return readings
+
+
+def _watering_lookback_message(
+    baseline: list[SensorReading],
+    current: list[SensorReading],
+    delay: timedelta,
+) -> str:
+    current_by_sensor = {reading.sensor: reading for reading in current}
+    lines = [f"Watering research after {_format_duration(delay)}:"]
+    changed = False
+
+    for before in baseline:
+        after = current_by_sensor.get(before.sensor)
+        if not after or before.value is None or after.value is None:
+            lines.append(f"- {before.sensor}: unavailable for comparison")
+            continue
+        delta = after.value - before.value
+        changed = changed or abs(delta) >= WATERING_CHANGE_THRESHOLD
+        lines.append(
+            f"- {before.sensor}: {_format_value(before.value)} -> {_format_value(after.value)} ({delta:+.1f})"
+        )
+
+    if len(lines) == 1:
+        lines.append("- no moisture or humidity sensor was mapped")
+    elif changed:
+        lines.append("Result: measurable sensor movement detected.")
+    else:
+        lines.append("Result: no clear movement detected yet.")
+    return "\n".join(lines)
+
+
+def _format_snapshot_for_log(readings: list[SensorReading]) -> str:
+    if not readings:
+        return "none"
+    parts = []
+    for reading in readings:
+        value = "unknown" if reading.value is None else _format_value(reading.value)
+        updated = "unknown" if reading.last_updated is None else reading.last_updated.isoformat()
+        parts.append(f"{reading.sensor}={value} updated={updated} entity={reading.entity_id}")
+    return "; ".join(parts)
+
+
+def _format_value(value: float) -> str:
+    return f"{value:.1f}"
+
+
+def _float_state(state: EntityState | None) -> float | None:
+    if state is None:
+        return None
+    try:
+        return float(state.state)
+    except ValueError:
+        return None
 
 
 def _issue_key(issue) -> str:
