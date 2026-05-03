@@ -5,6 +5,7 @@ description = "Dockerized Home Assistant plant monitoring service."
 requires-python = ">=3.11"
 dependencies = [
   "aiohttp>=3.9.0",
+  "homelab-functions @ https://github.com/feocco/homelab-functions/archive/refs/heads/main.zip",
   "python-dotenv>=1.0.0",
   "PyYAML>=6.0.0",
   "rich>=13.7.0",

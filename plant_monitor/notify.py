@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from plant_monitor.ha import HomeAssistantClient
+import asyncio
+from typing import Any
+
+from homelab import notify_joe
+
 from plant_monitor.models import PlantConfig, PlantStatus, Severity
 from plant_monitor.rules import overall_label
 
@@ -9,36 +13,42 @@ SNOOZE_ACTION_PREFIX = "PLANT_SNOOZE::"
 
 
 class Notifier:
-    def __init__(self, ha: HomeAssistantClient, notify_service: str, dashboard_url: str) -> None:
-        self.ha = ha
+    def __init__(
+        self,
+        dashboard_url: str,
+        service_url: str | None = None,
+        *,
+        token: str | None = None,
+        timeout: float = 10,
+    ) -> None:
         self.dashboard_url = dashboard_url
-        self.domain, self.service = _split_service(notify_service)
+        self.service_url = service_url
+        self.token = token
+        self.timeout = timeout
 
     async def send_urgent(self, plant: PlantConfig, status: PlantStatus) -> None:
         title = f"{status.label.label.upper()}: {plant.location} {plant.name}"
-        actions = self._dashboard_actions()
-        actions.append(
+        buttons = self._dashboard_buttons()
+        buttons.append(
             {
-                "action": f"{SNOOZE_ACTION_PREFIX}{plant.id}",
                 "title": "Delay 24h",
+                "action": f"{SNOOZE_ACTION_PREFIX}{plant.id}",
             }
         )
         if status.watering_recommended and plant.entities.pump:
-            actions.append(
+            buttons.append(
                 {
-                    "action": f"{WATER_ACTION_PREFIX}{plant.id}",
                     "title": f"Water {plant.watering.max_seconds}s",
+                    "action": f"{WATER_ACTION_PREFIX}{plant.id}",
                 }
             )
         await self._send(
             title=title,
             message=_urgent_message(status),
-            data={
-                "tag": f"plant-monitor-{plant.id}",
-                "group": "plant-monitor",
-                "actions": actions,
-                **self._open_data(),
-            },
+            tag=f"plant-monitor-{plant.id}",
+            group="plant-monitor",
+            url=self._dashboard_url(),
+            buttons=buttons,
         )
 
     async def send_weekly_digest(self, plants: list[PlantConfig], statuses: list[PlantStatus]) -> None:
@@ -46,58 +56,67 @@ class Notifier:
         await self._send(
             title=f"Plant status: {label.label.upper()}",
             message=format_digest(plants, statuses),
-            data={
-                "tag": "plant-monitor-weekly",
-                "group": "plant-monitor",
-                "actions": self._dashboard_actions(),
-                **self._open_data(),
-            },
+            tag="plant-monitor-weekly",
+            group="plant-monitor",
+            url=self._dashboard_url(),
+            buttons=self._dashboard_buttons(),
         )
 
     async def send_watering_result(self, plant: PlantConfig, message: str) -> None:
         await self._send(
             title=f"Watering: {plant.location} {plant.name}",
             message=message,
-            data={"tag": f"plant-monitor-water-{plant.id}", "group": "plant-monitor"},
+            tag=f"plant-monitor-water-{plant.id}",
+            group="plant-monitor",
         )
 
     async def send_watering_lookback(self, plant: PlantConfig, message: str) -> None:
         await self._send(
             title=f"Watering follow-up: {plant.location} {plant.name}",
             message=message,
-            data={"tag": f"plant-monitor-water-lookback-{plant.id}", "group": "plant-monitor"},
+            tag=f"plant-monitor-water-lookback-{plant.id}",
+            group="plant-monitor",
         )
 
     async def send_alert_snoozed(self, plant: PlantConfig, message: str) -> None:
         await self._send(
             title=f"Plant alerts delayed: {plant.location} {plant.name}",
             message=message,
-            data={
-                "tag": f"plant-monitor-snooze-{plant.id}",
-                "group": "plant-monitor",
-                **self._open_data(),
-            },
+            tag=f"plant-monitor-snooze-{plant.id}",
+            group="plant-monitor",
+            url=self._dashboard_url(),
         )
 
-    async def _send(self, title: str, message: str, data: dict) -> None:
-        await self.ha.call_service(
-            self.domain,
-            self.service,
-            {"title": title, "message": message, "data": data},
+    async def _send(
+        self,
+        title: str,
+        message: str,
+        *,
+        tag: str,
+        group: str,
+        url: str | None = None,
+        buttons: list[dict[str, Any]] | None = None,
+    ) -> None:
+        await asyncio.to_thread(
+            notify_joe,
+            title,
+            message,
+            tag=tag,
+            group=group,
+            url=url,
+            buttons=buttons or None,
+            service_url=self.service_url,
+            token=self.token,
+            timeout=self.timeout,
         )
 
-    def _dashboard_actions(self) -> list[dict]:
+    def _dashboard_buttons(self) -> list[dict[str, str]]:
         if not self.dashboard_url:
             return []
-        return [{"action": "URI", "title": "Open Plants", "uri": self.dashboard_url}]
+        return [{"title": "Open Plants", "action": "URI", "uri": self.dashboard_url}]
 
-    def _open_data(self) -> dict:
-        if not self.dashboard_url:
-            return {}
-        return {
-            "url": self.dashboard_url,
-            "clickAction": self.dashboard_url,
-        }
+    def _dashboard_url(self) -> str | None:
+        return self.dashboard_url or None
 
 
 def should_send_urgent(status: PlantStatus) -> bool:
@@ -140,10 +159,3 @@ def _urgent_message(status: PlantStatus) -> str:
 def _display_issues(status: PlantStatus) -> list:
     issues = [issue for issue in status.issues if issue.sensor != "plant"]
     return issues or list(status.issues)
-
-
-def _split_service(value: str) -> tuple[str, str]:
-    if "." not in value:
-        raise ValueError("HA_NOTIFY_SERVICE must look like notify.mobile_app_phone")
-    domain, service = value.split(".", 1)
-    return domain, service

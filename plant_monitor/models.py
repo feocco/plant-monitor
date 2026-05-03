@@ -69,7 +69,8 @@ class PlantConfig:
 class ServiceConfig:
     ha_url: str
     ha_token: str
-    notify_service: str
+    homelab_functions_url: str | None
+    homelab_functions_token: str | None
     plants_dashboard_url: str
     alert_snooze_hours: int
     alert_repeat_hours: int

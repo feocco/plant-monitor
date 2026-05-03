@@ -31,7 +31,11 @@ async def run(send_notification: bool) -> None:
         statuses = [evaluate_plant(plant, states) for plant in plants]
         _print_table(plants, statuses)
         if send_notification:
-            notifier = Notifier(ha, config.notify_service, config.plants_dashboard_url)
+            notifier = Notifier(
+                config.plants_dashboard_url,
+                service_url=config.homelab_functions_url,
+                token=config.homelab_functions_token,
+            )
             await notifier.send_weekly_digest(plants, statuses)
     finally:
         await ha.close()
@@ -66,7 +70,7 @@ def main() -> None:
     parser.add_argument(
         "--notify",
         action="store_true",
-        help="Send the current status as a Home Assistant notification digest.",
+        help="Send the current status as a homelab-functions notification digest.",
     )
     args = parser.parse_args()
     asyncio.run(run(send_notification=args.notify))

@@ -10,12 +10,14 @@ from plant_monitor.ha import HomeAssistantClient, parse_entity_state
 from plant_monitor.models import EntityState, PlantConfig, PlantStatus, ServiceConfig, Severity
 from plant_monitor.notify import Notifier, SNOOZE_ACTION_PREFIX, WATER_ACTION_PREFIX, should_send_urgent
 from plant_monitor.rules import evaluate_plant, watering_decision
-from plant_monitor.runtime_state import RuntimeState
+from plant_monitor.runtime_state import RuntimeState, ScheduledJob
 from plant_monitor.web import CallbackServer
 
 LOGGER = logging.getLogger(__name__)
 WATERING_LOOKBACK_DELAYS = (timedelta(hours=1), timedelta(hours=4))
 WATERING_CHANGE_THRESHOLD = 1.0
+WATERING_LOOKBACK_JOB_KIND = "watering_lookback"
+SCHEDULED_JOB_POLL_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,11 @@ class PlantMonitor:
         self.ha = ha
         self.state = state
         self.states: dict[str, EntityState] = {}
-        self.notifier = Notifier(ha, config.notify_service, config.plants_dashboard_url)
+        self.notifier = Notifier(
+            config.plants_dashboard_url,
+            service_url=config.homelab_functions_url,
+            token=config.homelab_functions_token,
+        )
         self.ha.add_event_handler(self.handle_event)
         self.callback_server = CallbackServer(
             config.service_host,
@@ -48,7 +54,6 @@ class PlantMonitor:
             self.handle_water_request,
         )
         self._plant_by_id = {plant.id: plant for plant in plants}
-        self._lookback_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self) -> None:
         while True:
@@ -72,15 +77,22 @@ class PlantMonitor:
         self.state.last_dry_run = self.config.dry_run
         statuses = await self.evaluate_and_notify()
         self._log_startup_health(statuses)
+        tasks = [
+            asyncio.create_task(self.ha.wait_closed(), name="ha-websocket-watch"),
+            asyncio.create_task(self._reconcile_loop(), name="plant-reconcile-loop"),
+            asyncio.create_task(self._weekly_loop(), name="plant-weekly-loop"),
+            asyncio.create_task(self._scheduled_job_loop(), name="plant-scheduled-job-loop"),
+        ]
 
         try:
-            await asyncio.gather(self._reconcile_loop(), self._weekly_loop())
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            for task in done:
+                task.result()
         finally:
-            pending_lookbacks = list(self._lookback_tasks)
-            for task in pending_lookbacks:
-                task.cancel()
-            if pending_lookbacks:
-                await asyncio.gather(*pending_lookbacks, return_exceptions=True)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await self.callback_server.stop()
             await self.ha.close()
 
@@ -158,9 +170,10 @@ class PlantMonitor:
             return 409, {"allowed": False, "reasons": ["No pump entity is mapped for this plant."]}
         await self._run_pump(plant.entities.pump, decision.seconds)
         watered_at = datetime.now(UTC)
-        self.state.last_watered_at[plant.id] = watered_at
-        self.state.save(self.config.state_path)
         baseline = _watering_snapshot(plant, self.states)
+        self.state.last_watered_at[plant.id] = watered_at
+        self._schedule_watering_lookbacks(plant, watered_at, baseline)
+        self.state.save(self.config.state_path)
         LOGGER.info(
             "Watering event recorded: plant=%s pump=%s seconds=%s baseline=%s",
             plant.id,
@@ -168,7 +181,6 @@ class PlantMonitor:
             decision.seconds,
             _format_snapshot_for_log(baseline),
         )
-        self._schedule_watering_lookbacks(plant, watered_at, baseline)
         message = f"Watered for {decision.seconds} seconds."
         await self.notifier.send_watering_result(plant, message)
         return 200, {"allowed": True, "seconds": decision.seconds}
@@ -201,6 +213,11 @@ class PlantMonitor:
                 self.state.last_weekly_key = weekly_key
                 self.state.save(self.config.state_path)
             await asyncio.sleep(300)
+
+    async def _scheduled_job_loop(self) -> None:
+        while True:
+            await self._run_due_scheduled_jobs()
+            await asyncio.sleep(SCHEDULED_JOB_POLL_SECONDS)
 
     def _watched_entities(self) -> set[str]:
         entities: set[str] = set()
@@ -261,62 +278,86 @@ class PlantMonitor:
         baseline: list[SensorReading],
     ) -> None:
         for delay in WATERING_LOOKBACK_DELAYS:
-            task = asyncio.create_task(
-                self._watering_lookback(plant, watered_at, baseline, delay),
-                name=f"watering-lookback-{plant.id}-{int(delay.total_seconds())}",
-            )
-            self._lookback_tasks.add(task)
-            task.add_done_callback(self._finish_lookback_task)
+            job = _watering_lookback_job(plant, watered_at, delay, baseline)
+            self.state.upsert_scheduled_job(job)
             LOGGER.info(
-                "Scheduled watering lookback: plant=%s delay=%s",
+                "Scheduled watering lookback: plant=%s delay=%s due_at=%s job=%s",
                 plant.id,
                 _format_duration(delay),
+                job.due_at.isoformat(),
+                job.id,
             )
 
-    def _finish_lookback_task(self, task: asyncio.Task[None]) -> None:
-        self._lookback_tasks.discard(task)
-        if task.cancelled():
+    async def _run_due_scheduled_jobs(self, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        due_jobs = [
+            job
+            for job in self.state.scheduled_jobs
+            if job.due_at.astimezone(UTC) <= now.astimezone(UTC)
+        ]
+        if not due_jobs:
             return
-        error = task.exception()
-        if error:
-            LOGGER.error(
-                "Watering lookback task failed",
-                exc_info=(type(error), error, error.__traceback__),
-            )
 
-    async def _watering_lookback(
+        completed_job_ids: list[str] = []
+        for job in due_jobs:
+            try:
+                await self._run_scheduled_job(job)
+            except Exception:
+                LOGGER.exception(
+                    "Scheduled job failed; will retry: job=%s kind=%s plant=%s due_at=%s",
+                    job.id,
+                    job.kind,
+                    job.plant_id,
+                    job.due_at.isoformat(),
+                )
+            else:
+                completed_job_ids.append(job.id)
+
+        if completed_job_ids:
+            for job_id in completed_job_ids:
+                self.state.remove_scheduled_job(job_id)
+            self.state.save(self.config.state_path)
+
+    async def _run_scheduled_job(self, job: ScheduledJob) -> None:
+        if job.kind != WATERING_LOOKBACK_JOB_KIND:
+            LOGGER.warning(
+                "Dropping unknown scheduled job kind: job=%s kind=%s",
+                job.id,
+                job.kind,
+            )
+            return
+
+        plant = self._plant_by_id.get(job.plant_id)
+        if plant is None:
+            LOGGER.warning(
+                "Dropping scheduled job for unknown plant: job=%s plant=%s",
+                job.id,
+                job.plant_id,
+            )
+            return
+
+        watered_at, delay, baseline = _watering_lookback_from_payload(job)
+        await self._send_watering_lookback(plant, watered_at, baseline, delay)
+
+    async def _send_watering_lookback(
         self,
         plant: PlantConfig,
         watered_at: datetime,
         baseline: list[SensorReading],
         delay: timedelta,
     ) -> None:
-        try:
-            await asyncio.sleep(delay.total_seconds())
-            self.states = await self.ha.get_states()
-            current = _watering_snapshot(plant, self.states)
-            message = _watering_lookback_message(baseline, current, delay)
-            LOGGER.info(
-                "Watering lookback complete: plant=%s watered_at=%s delay=%s result=%s current=%s",
-                plant.id,
-                watered_at.isoformat(),
-                _format_duration(delay),
-                message.replace("\n", " | "),
-                _format_snapshot_for_log(current),
-            )
-            await self.notifier.send_watering_lookback(plant, message)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            LOGGER.exception(
-                "Watering lookback failed: plant=%s delay=%s",
-                plant.id,
-                _format_duration(delay),
-            )
-            await self.notifier.send_watering_lookback(
-                plant,
-                f"Watering research after {_format_duration(delay)} failed: {error}",
-            )
+        self.states = await self.ha.get_states()
+        current = _watering_snapshot(plant, self.states)
+        message = _watering_lookback_message(baseline, current, delay)
+        LOGGER.info(
+            "Watering lookback complete: plant=%s watered_at=%s delay=%s result=%s current=%s",
+            plant.id,
+            watered_at.isoformat(),
+            _format_duration(delay),
+            message.replace("\n", " | "),
+            _format_snapshot_for_log(current),
+        )
+        await self.notifier.send_watering_lookback(plant, message)
 
 
 def _alert_key(status: PlantStatus) -> str:
@@ -398,6 +439,73 @@ def _watering_snapshot(plant: PlantConfig, states: dict[str, EntityState]) -> li
             )
         )
     return readings
+
+
+def _watering_lookback_job(
+    plant: PlantConfig,
+    watered_at: datetime,
+    delay: timedelta,
+    baseline: list[SensorReading],
+) -> ScheduledJob:
+    watered_at = watered_at.astimezone(UTC)
+    due_at = watered_at + delay
+    delay_seconds = int(delay.total_seconds())
+    job_id = f"{WATERING_LOOKBACK_JOB_KIND}:{plant.id}:{watered_at.isoformat()}:{delay_seconds}"
+    return ScheduledJob(
+        id=job_id,
+        kind=WATERING_LOOKBACK_JOB_KIND,
+        plant_id=plant.id,
+        due_at=due_at,
+        payload={
+            "watered_at": watered_at.isoformat(),
+            "delay_seconds": delay_seconds,
+            "baseline": [_sensor_reading_payload(reading) for reading in baseline],
+        },
+    )
+
+
+def _watering_lookback_from_payload(
+    job: ScheduledJob,
+) -> tuple[datetime, timedelta, list[SensorReading]]:
+    watered_at_value = job.payload.get("watered_at")
+    watered_at = (
+        datetime.fromisoformat(str(watered_at_value)).astimezone(UTC)
+        if watered_at_value
+        else job.due_at.astimezone(UTC)
+    )
+    delay_seconds = job.payload.get("delay_seconds")
+    if delay_seconds is None:
+        delay = job.due_at.astimezone(UTC) - watered_at
+    else:
+        delay = timedelta(seconds=float(delay_seconds))
+
+    baseline_payload = job.payload.get("baseline") or []
+    baseline = [
+        _sensor_reading_from_payload(item)
+        for item in baseline_payload
+        if isinstance(item, dict)
+    ]
+    return watered_at, delay, baseline
+
+
+def _sensor_reading_payload(reading: SensorReading) -> dict[str, object]:
+    return {
+        "sensor": reading.sensor,
+        "entity_id": reading.entity_id,
+        "value": reading.value,
+        "last_updated": reading.last_updated.isoformat() if reading.last_updated else None,
+    }
+
+
+def _sensor_reading_from_payload(payload: dict[object, object]) -> SensorReading:
+    value = payload.get("value")
+    last_updated = payload.get("last_updated")
+    return SensorReading(
+        sensor=str(payload["sensor"]),
+        entity_id=str(payload["entity_id"]),
+        value=None if value is None else float(value),
+        last_updated=datetime.fromisoformat(str(last_updated)) if last_updated else None,
+    )
 
 
 def _watering_lookback_message(

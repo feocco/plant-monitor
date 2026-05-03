@@ -27,7 +27,8 @@ Fill in `.env` with:
 
 - `HA_URL`
 - `HA_LONG_LIVED_TOKEN`
-- `HA_NOTIFY_SERVICE`
+- `HOMELAB_FUNCTIONS_URL`
+- `HOMELAB_FUNCTIONS_TOKEN`
 - `HA_PLANTS_DASHBOARD_URL`
 
 Typical first run:
@@ -52,7 +53,7 @@ the configured `plants.yaml`.
 `plant status`
 
 Prints the current plant status as a color-coded table. Add `--notify` to send a
-one-time Home Assistant notification digest.
+one-time notification digest through homelab-functions.
 
 `plant monitor`
 
@@ -102,6 +103,8 @@ Species defaults live in `plant_monitor/thresholds.py`.
 
 Individual alerts are sent when a plant becomes orange/red or watering is
 recommended. Repeated alerts use a backoff controlled by `ALERT_REPEAT_HOURS`.
+Delivery goes through `homelab-functions`; this service still uses Home
+Assistant credentials for state listening and pump control.
 
 Notification actions:
 

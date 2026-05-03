@@ -20,7 +20,7 @@ def main() -> None:
     status_parser.add_argument(
         "--notify",
         action="store_true",
-        help="Send the current status as a Home Assistant notification digest.",
+        help="Send the current status as a homelab-functions notification digest.",
     )
 
     subparsers.add_parser("monitor", help="Run the long-lived monitor.")
@@ -36,4 +36,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

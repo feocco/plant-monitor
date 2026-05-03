@@ -28,31 +28,47 @@ class HomeAssistantClient:
     async def connect(self) -> None:
         await self.close()
         self._session = aiohttp.ClientSession()
-        self._ws = await self._session.ws_connect(_websocket_url(self.config.ha_url))
-        auth_required = await self._ws.receive_json()
-        if auth_required.get("type") != "auth_required":
-            raise RuntimeError(f"Unexpected Home Assistant auth handshake: {auth_required}")
-        await self._ws.send_json({"type": "auth", "access_token": self.config.ha_token})
-        auth_response = await self._ws.receive_json()
-        if auth_response.get("type") != "auth_ok":
-            raise RuntimeError(f"Home Assistant authentication failed: {auth_response}")
-        self._reader_task = asyncio.create_task(self._reader(), name="ha-websocket-reader")
-        LOGGER.info("Connected to Home Assistant WebSocket")
+        try:
+            self._ws = await self._session.ws_connect(_websocket_url(self.config.ha_url))
+            auth_required = await self._ws.receive_json()
+            if auth_required.get("type") != "auth_required":
+                raise RuntimeError(f"Unexpected Home Assistant auth handshake: {auth_required}")
+            await self._ws.send_json({"type": "auth", "access_token": self.config.ha_token})
+            auth_response = await self._ws.receive_json()
+            if auth_response.get("type") != "auth_ok":
+                raise RuntimeError(f"Home Assistant authentication failed: {auth_response}")
+            self._reader_task = asyncio.create_task(self._reader(), name="ha-websocket-reader")
+            LOGGER.info("Connected to Home Assistant WebSocket")
+        except Exception:
+            await self.close()
+            raise
 
     async def close(self) -> None:
-        if self._reader_task:
-            self._reader_task.cancel()
+        reader_task = self._reader_task
+        self._reader_task = None
+        if reader_task:
+            if not reader_task.done():
+                reader_task.cancel()
             try:
-                await self._reader_task
+                await reader_task
             except asyncio.CancelledError:
                 pass
-            self._reader_task = None
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        if self._session:
-            await self._session.close()
-        self._ws = None
-        self._session = None
+            except Exception as exc:
+                LOGGER.debug("Ignoring Home Assistant reader error during close: %s", exc)
+        self._fail_pending(RuntimeError("Home Assistant WebSocket closed"))
+        try:
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+        finally:
+            if self._session:
+                await self._session.close()
+            self._ws = None
+            self._session = None
+
+    async def wait_closed(self) -> None:
+        if self._reader_task is None:
+            raise RuntimeError("Home Assistant WebSocket reader is not running")
+        await self._reader_task
 
     def add_event_handler(self, handler: EventHandler) -> None:
         self._event_handlers.append(handler)
@@ -89,38 +105,54 @@ class HomeAssistantClient:
     async def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._ws or self._ws.closed:
             raise RuntimeError("Home Assistant WebSocket is not connected")
+        if self._reader_task and self._reader_task.done():
+            self._reader_task.result()
         message_id = next(self._ids)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[message_id] = future
-        await self._ws.send_json({"id": message_id, **payload})
-        return await asyncio.wait_for(future, timeout=30)
+        try:
+            await self._ws.send_json({"id": message_id, **payload})
+            return await asyncio.wait_for(future, timeout=30)
+        finally:
+            self._pending.pop(message_id, None)
 
     async def _reader(self) -> None:
         if self._ws is None:
             raise RuntimeError("Home Assistant WebSocket reader started without a connection")
-        async for message in self._ws:
-            if message.type == aiohttp.WSMsgType.ERROR:
-                raise RuntimeError(f"Home Assistant WebSocket error: {self._ws.exception()}")
-            if message.type != aiohttp.WSMsgType.TEXT:
-                continue
-            payload = message.json()
-            if payload.get("type") == "result":
-                self._finish_pending(payload)
-            elif payload.get("type") == "event":
-                await self._dispatch_event(payload.get("event") or {})
-            else:
-                LOGGER.debug("Ignoring Home Assistant message: %s", payload)
+        try:
+            async for message in self._ws:
+                if message.type == aiohttp.WSMsgType.ERROR:
+                    raise RuntimeError(f"Home Assistant WebSocket error: {self._ws.exception()}")
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                payload = message.json()
+                if payload.get("type") == "result":
+                    self._finish_pending(payload)
+                elif payload.get("type") == "event":
+                    await self._dispatch_event(payload.get("event") or {})
+                else:
+                    LOGGER.debug("Ignoring Home Assistant message: %s", payload)
+            raise RuntimeError("Home Assistant WebSocket closed")
+        finally:
+            self._fail_pending(RuntimeError("Home Assistant WebSocket reader stopped"))
 
     def _finish_pending(self, payload: dict[str, Any]) -> None:
         message_id = payload.get("id")
         future = self._pending.pop(message_id, None)
-        if not future:
+        if not future or future.done():
             return
         if payload.get("success", False):
             future.set_result(payload)
         else:
             future.set_exception(RuntimeError(f"Home Assistant request failed: {payload}"))
+
+    def _fail_pending(self, error: Exception) -> None:
+        pending = list(self._pending.values())
+        self._pending.clear()
+        for future in pending:
+            if not future.done():
+                future.set_exception(error)
 
     async def _dispatch_event(self, event: dict[str, Any]) -> None:
         for handler in list(self._event_handlers):

@@ -23,7 +23,8 @@ def load_service_config(env_path: str | None = None) -> ServiceConfig:
     return ServiceConfig(
         ha_url=_required("HA_URL").rstrip("/"),
         ha_token=_required("HA_LONG_LIVED_TOKEN"),
-        notify_service=os.getenv("HA_NOTIFY_SERVICE", "notify.notify"),
+        homelab_functions_url=_optional("HOMELAB_FUNCTIONS_URL"),
+        homelab_functions_token=_optional("HOMELAB_FUNCTIONS_TOKEN"),
         plants_dashboard_url=os.getenv("HA_PLANTS_DASHBOARD_URL", "/lovelace/plants"),
         alert_snooze_hours=int(os.getenv("ALERT_SNOOZE_HOURS", "24")),
         alert_repeat_hours=int(os.getenv("ALERT_REPEAT_HOURS", "24")),
@@ -131,3 +132,8 @@ def _required(name: str) -> str:
     if not value:
         raise ValueError(f"Missing required environment variable: {name}")
     return value
+
+
+def _optional(name: str) -> str | None:
+    value = os.getenv(name)
+    return value or None

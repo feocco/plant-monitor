@@ -4,6 +4,19 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+
+SCHEDULED_JOBS_SCHEMA_VERSION = 1
+
+
+@dataclass
+class ScheduledJob:
+    id: str
+    kind: str
+    plant_id: str
+    due_at: datetime
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -14,6 +27,8 @@ class RuntimeState:
     alert_snoozed_until: dict[str, datetime] = field(default_factory=dict)
     last_weekly_key: str | None = None
     last_dry_run: bool | None = None
+    scheduled_jobs_schema_version: int = SCHEDULED_JOBS_SCHEMA_VERSION
+    scheduled_jobs: list[ScheduledJob] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: str | Path) -> "RuntimeState":
@@ -37,6 +52,19 @@ class RuntimeState:
             },
             last_weekly_key=raw.get("last_weekly_key"),
             last_dry_run=raw.get("last_dry_run"),
+            scheduled_jobs_schema_version=int(
+                raw.get("scheduled_jobs_schema_version", SCHEDULED_JOBS_SCHEMA_VERSION)
+            ),
+            scheduled_jobs=[
+                ScheduledJob(
+                    id=str(item["id"]),
+                    kind=str(item["kind"]),
+                    plant_id=str(item["plant_id"]),
+                    due_at=datetime.fromisoformat(item["due_at"]),
+                    payload=dict(item.get("payload") or {}),
+                )
+                for item in (raw.get("scheduled_jobs") or [])
+            ],
         )
 
     def save(self, path: str | Path) -> None:
@@ -58,5 +86,27 @@ class RuntimeState:
             },
             "last_weekly_key": self.last_weekly_key,
             "last_dry_run": self.last_dry_run,
+            "scheduled_jobs_schema_version": self.scheduled_jobs_schema_version,
+            "scheduled_jobs": [
+                {
+                    "id": job.id,
+                    "kind": job.kind,
+                    "plant_id": job.plant_id,
+                    "due_at": job.due_at.isoformat(),
+                    "payload": job.payload,
+                }
+                for job in self.scheduled_jobs
+            ],
         }
-        state_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path = state_path.with_name(f".{state_path.name}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(state_path)
+
+    def upsert_scheduled_job(self, job: ScheduledJob) -> None:
+        self.scheduled_jobs = [
+            existing for existing in self.scheduled_jobs if existing.id != job.id
+        ]
+        self.scheduled_jobs.append(job)
+
+    def remove_scheduled_job(self, job_id: str) -> None:
+        self.scheduled_jobs = [job for job in self.scheduled_jobs if job.id != job_id]

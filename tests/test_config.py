@@ -2,7 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from plant_monitor.config import load_plants
+from plant_monitor.config import load_plants, load_service_config
+
+
+def test_load_service_config_reads_homelab_functions_settings(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HA_URL", "http://homeassistant.local:8123/")
+    monkeypatch.setenv("HA_LONG_LIVED_TOKEN", "ha-token")
+    monkeypatch.setenv("HOMELAB_FUNCTIONS_URL", "http://homelab-functions:8091")
+    monkeypatch.setenv("HOMELAB_FUNCTIONS_TOKEN", "functions-token")
+
+    config = load_service_config(str(tmp_path / ".env"))
+
+    assert config.ha_url == "http://homeassistant.local:8123"
+    assert config.homelab_functions_url == "http://homelab-functions:8091"
+    assert config.homelab_functions_token == "functions-token"
 
 
 def test_load_plants_parses_entities_and_watering(tmp_path: Path) -> None:
