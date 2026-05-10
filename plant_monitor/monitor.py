@@ -225,7 +225,6 @@ class PlantMonitor:
             entities.update(
                 entity
                 for entity in (
-                    plant.plant_entity,
                     plant.entities.moisture,
                     plant.entities.temperature,
                     plant.entities.humidity,

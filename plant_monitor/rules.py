@@ -29,7 +29,6 @@ def evaluate_plant(
     thresholds = _thresholds_for(plant)
     issues: list[Issue] = []
 
-    _add_plant_entity_issue(issues, plant, states)
     _add_sensor_issues(issues, "moisture", plant.entities.moisture, states, now)
     _add_sensor_issues(issues, "temperature", plant.entities.temperature, states, now)
     _add_sensor_issues(issues, "humidity", plant.entities.humidity, states, now)
@@ -102,24 +101,6 @@ def watering_decision(
 
 def overall_label(statuses: list[PlantStatus]) -> Severity:
     return max((status.label for status in statuses), default=Severity.GREEN)
-
-
-def _add_plant_entity_issue(
-    issues: list[Issue],
-    plant: PlantConfig,
-    states: dict[str, EntityState],
-) -> None:
-    if not plant.plant_entity:
-        return
-    state = states.get(plant.plant_entity)
-    if not state:
-        issues.append(Issue(Severity.RED, "plant", f"plant entity {plant.plant_entity} is unavailable."))
-        return
-    value = state.state.lower()
-    if value in {"unavailable", "unknown"}:
-        issues.append(Issue(Severity.RED, "plant", f"plant entity is {value}."))
-    elif value == "problem":
-        issues.append(Issue(Severity.ORANGE, "plant", "Home Assistant plant entity reports a problem."))
 
 
 def _add_sensor_issues(

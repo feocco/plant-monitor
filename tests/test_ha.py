@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
-import pytest
-
 from plant_monitor.ha import HomeAssistantClient, _websocket_url, parse_entity_state
 from plant_monitor.models import ServiceConfig
 
@@ -31,59 +27,96 @@ def test_parse_entity_state_handles_zulu_timestamps() -> None:
     assert state.last_updated.isoformat() == "2026-05-02T12:05:00+00:00"
 
 
-async def test_finish_pending_ignores_cancelled_future() -> None:
+async def test_get_states_parses_shared_client_states() -> None:
     client = HomeAssistantClient(_config())
-    future = asyncio.get_running_loop().create_future()
-    client._pending[1] = future
-    future.cancel()
+    client._client = _FakeSharedClient(
+        states=[
+            {
+                "entity_id": "sensor.moisture",
+                "state": "41",
+                "attributes": {"friendly_name": "Moisture"},
+                "last_changed": "2026-05-02T12:00:00Z",
+                "last_updated": "2026-05-02T12:05:00Z",
+            }
+        ]
+    )
 
-    client._finish_pending({"id": 1, "success": True, "result": {}})
+    states = await client.get_states()
 
-    assert client._pending == {}
+    assert states["sensor.moisture"].state == "41"
+    assert states["sensor.moisture"].last_updated.isoformat() == "2026-05-02T12:05:00+00:00"
 
 
-async def test_request_timeout_removes_pending_future(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_call_service_delegates_to_shared_client() -> None:
     client = HomeAssistantClient(_config())
-    client._ws = _FakeWebSocket()
+    shared_client = _FakeSharedClient()
+    client._client = shared_client
 
-    async def timeout_wait_for(future, timeout):
-        future.cancel()
-        raise TimeoutError
+    result = await client.call_service("switch", "turn_on", {"entity_id": "switch.pump"})
 
-    monkeypatch.setattr("plant_monitor.ha.asyncio.wait_for", timeout_wait_for)
-
-    with pytest.raises(TimeoutError):
-        await client.request({"type": "get_states"})
-
-    assert client._pending == {}
-    client._finish_pending({"id": 1, "success": True, "result": {}})
+    assert result == {"ok": True}
+    assert shared_client.service_calls == [
+        ("switch", "turn_on", {"entity_id": "switch.pump"}),
+    ]
 
 
-async def test_close_swallows_finished_reader_task_error() -> None:
+async def test_dry_run_call_service_skips_shared_client() -> None:
+    client = HomeAssistantClient(_config(dry_run=True))
+    shared_client = _FakeSharedClient()
+    client._client = shared_client
+
+    result = await client.call_service("switch", "turn_on", {"entity_id": "switch.pump"})
+
+    assert result == {"dry_run": True}
+    assert shared_client.service_calls == []
+
+
+async def test_wait_closed_delegates_to_shared_client() -> None:
     client = HomeAssistantClient(_config())
+    shared_client = _FakeSharedClient()
+    client._client = shared_client
 
-    async def fail_reader() -> None:
-        raise asyncio.InvalidStateError("invalid state")
+    await client.wait_closed()
 
-    client._reader_task = asyncio.create_task(fail_reader())
-    await asyncio.sleep(0)
-
-    await client.close()
-
-    assert client._reader_task is None
+    assert shared_client.wait_closed_called
 
 
-class _FakeWebSocket:
-    closed = False
+async def test_event_dispatch_continues_after_handler_failure() -> None:
+    client = HomeAssistantClient(_config())
+    handled: list[dict] = []
 
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
+    async def failing_handler(event: dict) -> None:
+        raise RuntimeError("boom")
 
-    async def send_json(self, payload: dict) -> None:
-        self.sent.append(payload)
+    async def recording_handler(event: dict) -> None:
+        handled.append(event)
+
+    client.add_event_handler(failing_handler)
+    client.add_event_handler(recording_handler)
+
+    await client._dispatch_event({"event_type": "state_changed"})
+
+    assert handled == [{"event_type": "state_changed"}]
 
 
-def _config() -> ServiceConfig:
+class _FakeSharedClient:
+    def __init__(self, states: list[dict] | None = None) -> None:
+        self.states = states or []
+        self.service_calls: list[tuple[str, str, dict]] = []
+        self.wait_closed_called = False
+
+    async def get_states(self) -> list[dict]:
+        return self.states
+
+    async def call_service(self, domain: str, service: str, service_data: dict) -> dict:
+        self.service_calls.append((domain, service, service_data))
+        return {"ok": True}
+
+    async def wait_closed(self) -> None:
+        self.wait_closed_called = True
+
+
+def _config(dry_run: bool = False) -> ServiceConfig:
     return ServiceConfig(
         ha_url="http://homeassistant.local:8123",
         ha_token="token",
@@ -97,7 +130,7 @@ def _config() -> ServiceConfig:
         service_host="127.0.0.1",
         service_port=0,
         callback_token="",
-        dry_run=False,
+        dry_run=dry_run,
         log_level="INFO",
         timezone="UTC",
     )

@@ -56,7 +56,7 @@ def test_species_moisture_defaults_drive_watering_recommendation() -> None:
     assert status.watering_recommended
 
 
-def test_plant_entity_problem_is_primary_health_signal() -> None:
+def test_plant_entity_problem_is_ignored_for_alerting() -> None:
     plant = _plant()
     status = evaluate_plant(
         plant,
@@ -64,8 +64,8 @@ def test_plant_entity_problem_is_primary_health_signal() -> None:
         NOW,
     )
 
-    assert status.label == Severity.ORANGE
-    assert any(issue.sensor == "plant" for issue in status.issues)
+    assert status.label == Severity.GREEN
+    assert not status.issues
 
 
 def test_watering_guard_blocks_stale_sensor() -> None:
