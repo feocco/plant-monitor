@@ -10,7 +10,6 @@ from plant_monitor.condition_engine import (
     POST_WATERING_DRY_SUPPRESSION,
     POST_WATERING_WET_SUPPRESSION,
     active_condition_records,
-    due_phone_conditions,
     mark_notified,
     plant_statuses_from_conditions,
     update_conditions,
@@ -18,6 +17,7 @@ from plant_monitor.condition_engine import (
 from plant_monitor.ha import HomeAssistantClient, parse_entity_state
 from plant_monitor.models import EntityState, PlantConfig, PlantStatus, ServiceConfig, Severity
 from plant_monitor.llm_text import rewrite_notification_text
+from plant_monitor.notification_planner import NotificationPlanner
 from plant_monitor.notify import (
     Notifier,
     SNOOZE_ACTION_PREFIX,
@@ -140,51 +140,34 @@ class PlantMonitor:
         active_records = active_condition_records(self.state)
         watering_allowed = self._watering_allowed_by_plant(active_records, now)
         statuses = plant_statuses_from_conditions(self.plants, active_records, watering_allowed)
-        phone_records_by_plant = {
-            plant.id: due_phone_conditions(
-                self.state,
-                plant.id,
-                self.config.alert_repeat_hours,
-                now,
+        planning = NotificationPlanner(
+            self.plants,
+            self.state,
+            self.config.alert_repeat_hours,
+        ).build(
+            statuses=statuses,
+            active_records=active_records,
+            watering_allowed=watering_allowed,
+            now=now,
+        )
+        for plan in planning.plans:
+            message = await rewrite_notification_text(
+                self.config,
+                plan.plant,
+                plan.status,
+                urgent_message(plan.status),
             )
-            for plant in self.plants
-        }
-        for plant, status in zip(self.plants, statuses, strict=True):
-            due_records = phone_records_by_plant[plant.id]
-            if self._is_snoozed(plant.id):
-                continue
-            if due_records:
-                alert_records = [
-                    record
-                    for record in active_records
-                    if record.plant_id == plant.id
-                    and (
-                        record in due_records
-                        or (record.sensor == "humidity" and record.severity == "red")
-                    )
-                ]
-                due_status = plant_statuses_from_conditions(
-                    [plant],
-                    alert_records,
-                    watering_allowed,
-                )[0]
-                message = await rewrite_notification_text(
-                    self.config,
-                    plant,
-                    due_status,
-                    urgent_message(due_status),
-                )
-                await self.notifier.send_urgent(plant, due_status, message=message)
-                if self.config.dry_run:
-                    LOGGER.info("DRY_RUN alert not recorded as sent for %s", plant.id)
-                else:
-                    mark_notified(due_records, now)
-                    self.state.last_alert_label[plant.id] = _alert_key(due_status)
-                    self.state.last_alert_sent_at[plant.id] = now
-            elif status.label == Severity.GREEN and not status.watering_recommended:
-                self.state.last_alert_label.pop(plant.id, None)
-                self.state.last_alert_sent_at.pop(plant.id, None)
-                self.state.alert_snoozed_until.pop(plant.id, None)
+            await self.notifier.send_urgent(plan.plant, plan.status, message=message)
+            if self.config.dry_run:
+                LOGGER.info("DRY_RUN alert not recorded as sent for %s", plan.plant.id)
+            else:
+                mark_notified(plan.due_records, now)
+                self.state.last_alert_label[plan.plant.id] = _alert_key(plan.status)
+                self.state.last_alert_sent_at[plan.plant.id] = now
+        for plant_id in planning.clear_alert_plant_ids:
+            self.state.last_alert_label.pop(plant_id, None)
+            self.state.last_alert_sent_at.pop(plant_id, None)
+            self.state.alert_snoozed_until.pop(plant_id, None)
         self.state.save(self.config.state_path)
         return statuses
 
@@ -293,15 +276,6 @@ class PlantMonitor:
                 if entity
             )
         return entities
-
-    def _is_snoozed(self, plant_id: str) -> bool:
-        until = self.state.alert_snoozed_until.get(plant_id)
-        if until is None:
-            return False
-        if datetime.now(UTC) < until.astimezone(UTC):
-            return True
-        self.state.alert_snoozed_until.pop(plant_id, None)
-        return False
 
     def _log_startup_health(self, statuses: list[PlantStatus]) -> None:
         counts = _status_counts(statuses)
