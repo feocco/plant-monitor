@@ -93,17 +93,20 @@ class PlantMonitor:
         self.state.last_dry_run = self.config.dry_run
         statuses = await self.evaluate_and_notify()
         self._log_startup_health(statuses)
+        ha_closed_task = asyncio.create_task(self.ha.wait_closed(), name="ha-websocket-watch")
         tasks = [
-            asyncio.create_task(self.ha.wait_closed(), name="ha-websocket-watch"),
+            ha_closed_task,
             asyncio.create_task(self._reconcile_loop(), name="plant-reconcile-loop"),
             asyncio.create_task(self._weekly_loop(), name="plant-weekly-loop"),
             asyncio.create_task(self._scheduled_job_loop(), name="plant-scheduled-job-loop"),
         ]
 
         try:
-            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
+            if ha_closed_task in done:
+                LOGGER.info("Home Assistant WebSocket closed; reconnecting")
         finally:
             for task in tasks:
                 if not task.done():
