@@ -11,9 +11,9 @@ from plant_monitor.condition_engine import (
     POST_WATERING_WET_SUPPRESSION,
 )
 from plant_monitor.ha import HomeAssistantClient
-from plant_monitor.models import EntityState, PlantConfig, ServiceConfig
+from plant_monitor.models import EntityState, PlantConfig, ServiceConfig, Severity, WateringDecision
 from plant_monitor.notify import Notifier
-from plant_monitor.rules import watering_decision
+from plant_monitor.policy import aware, numeric_state, staleness, thresholds_for
 from plant_monitor.runtime_state import RuntimeState, ScheduledJob
 
 LOGGER = logging.getLogger(__name__)
@@ -28,6 +28,50 @@ class SensorReading:
     entity_id: str
     value: float | None
     last_updated: datetime | None
+
+
+def watering_decision(
+    plant: PlantConfig,
+    states: dict[str, EntityState],
+    last_watered_at: datetime | None,
+    requested_seconds: int | None = None,
+    now: datetime | None = None,
+) -> WateringDecision:
+    now = aware(now)
+    thresholds = thresholds_for(plant)
+    seconds = min(requested_seconds or plant.watering.max_seconds, plant.watering.max_seconds)
+    reasons: list[str] = []
+
+    if not plant.entities.pump:
+        reasons.append("No pump entity is mapped for this plant.")
+
+    moisture_state = states.get(plant.entities.moisture or "")
+    moisture = numeric_state(moisture_state)
+    if moisture_state is None:
+        reasons.append("No moisture sensor is mapped or available.")
+    elif staleness(moisture_state, now) >= Severity.RED:
+        reasons.append("Moisture sensor is stale; watering would be blind.")
+    elif moisture is None:
+        reasons.append("Moisture sensor state is not numeric.")
+    elif thresholds.moisture.min_orange is not None and moisture >= thresholds.moisture.min_orange:
+        reasons.append("Moisture is not low enough for guarded watering.")
+
+    if last_watered_at:
+        cooldown_until = aware(last_watered_at) + timedelta(hours=plant.watering.cooldown_hours)
+        if now < cooldown_until:
+            reasons.append(f"Pump cooldown is active until {cooldown_until.isoformat()}.")
+
+    if seconds < 1:
+        reasons.append("Watering duration must be at least 1 second.")
+    if seconds > plant.watering.max_seconds:
+        reasons.append("Requested duration exceeds configured cap.")
+
+    return WateringDecision(
+        allowed=not reasons,
+        plant_id=plant.id,
+        seconds=seconds,
+        reasons=tuple(reasons),
+    )
 
 
 class WateringService:

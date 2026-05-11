@@ -6,7 +6,6 @@ from typing import Any
 from homelab import notify_joe
 
 from plant_monitor.models import PlantConfig, PlantStatus, Severity
-from plant_monitor.rules import overall_label
 
 WATER_ACTION_PREFIX = "PLANT_WATER::"
 SNOOZE_ACTION_PREFIX = "PLANT_SNOOZE::"
@@ -126,6 +125,10 @@ class Notifier:
 
 def should_send_urgent(status: PlantStatus) -> bool:
     return status.label in {Severity.ORANGE, Severity.RED} or status.watering_recommended
+
+
+def overall_label(statuses: list[PlantStatus]) -> Severity:
+    return max((status.label for status in statuses), default=Severity.GREEN)
 
 
 def format_digest(plants: list[PlantConfig], statuses: list[PlantStatus]) -> str:

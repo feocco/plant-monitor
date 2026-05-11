@@ -17,9 +17,8 @@ from plant_monitor.notify import (
     should_send_urgent,
     urgent_message,
 )
-from plant_monitor.rules import watering_decision
 from plant_monitor.runtime_state import RuntimeState
-from plant_monitor.watering import WateringService
+from plant_monitor.watering import WateringService, watering_decision
 from plant_monitor.web import CallbackServer
 
 LOGGER = logging.getLogger(__name__)
