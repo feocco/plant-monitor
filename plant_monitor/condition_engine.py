@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from plant_monitor.models import EntityState, Issue, PlantConfig, PlantStatus, Severity
-from plant_monitor.rules import (
+from plant_monitor.policy import (
     BATTERY_STALE_ORANGE_HOURS,
     BATTERY_STALE_RED_HOURS,
     STALE_ORANGE_HOURS,
     STALE_RED_HOURS,
-    _numeric_state,
-    _thresholds_for,
+    numeric_state,
+    thresholds_for,
 )
 from plant_monitor.runtime_state import ConditionRecord, RuntimeState, SensorSample
 
@@ -185,7 +185,7 @@ def record_samples(
     for plant in plants:
         for sensor, entity_id in _plant_sensor_entities(plant):
             state = states.get(entity_id)
-            value = _numeric_state(state)
+            value = numeric_state(state)
             if state is None or value is None:
                 continue
             timestamp = _aware(state.last_updated)
@@ -278,11 +278,11 @@ def _moisture_candidates(
     now: datetime,
 ) -> list[ConditionCandidate]:
     state = states.get(plant.entities.moisture or "")
-    value = _numeric_state(state)
+    value = numeric_state(state)
     if value is None:
         return []
 
-    thresholds = _thresholds_for(plant).moisture
+    thresholds = thresholds_for(plant).moisture
     candidates: list[ConditionCandidate] = []
     if thresholds.min_orange is not None and value < thresholds.min_orange:
         candidates.append(
@@ -361,11 +361,11 @@ def _temperature_candidates(
     now: datetime,
 ) -> list[ConditionCandidate]:
     state = states.get(plant.entities.temperature or "")
-    value = _numeric_state(state)
+    value = numeric_state(state)
     if value is None:
         return []
 
-    brightness = _numeric_state(states.get(plant.entities.brightness or ""))
+    brightness = numeric_state(states.get(plant.entities.brightness or ""))
     sun_driven = brightness is not None and brightness >= HIGH_BRIGHTNESS_LX
     candidates: list[ConditionCandidate] = []
     if value < HARD_TEMPERATURE_LOW:
@@ -391,7 +391,7 @@ def _temperature_candidates(
             )
         )
     else:
-        thresholds = _thresholds_for(plant).temperature
+        thresholds = thresholds_for(plant).temperature
         if thresholds.min_green is not None and value < thresholds.min_green:
             candidates.append(
                 _temperature_candidate(
@@ -449,11 +449,11 @@ def _humidity_candidates(
 ) -> list[ConditionCandidate]:
     del now
     state = states.get(plant.entities.humidity or "")
-    value = _numeric_state(state)
+    value = numeric_state(state)
     if value is None:
         return []
 
-    thresholds = _thresholds_for(plant).humidity
+    thresholds = thresholds_for(plant).humidity
     if thresholds.min_orange is not None and value < thresholds.min_orange:
         severity = Severity.RED
         direction = "low"
@@ -488,11 +488,11 @@ def _battery_candidate(
     states: dict[str, EntityState],
 ) -> ConditionCandidate | None:
     state = states.get(plant.entities.battery or "")
-    value = _numeric_state(state)
+    value = numeric_state(state)
     if value is None:
         return None
 
-    thresholds = _thresholds_for(plant)
+    thresholds = thresholds_for(plant)
     if value <= thresholds.battery_red:
         return ConditionCandidate(
             plant_id=plant.id,

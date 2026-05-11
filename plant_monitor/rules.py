@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from plant_monitor.models import (
     EntityState,
@@ -12,12 +12,15 @@ from plant_monitor.models import (
     ThresholdRange,
     WateringDecision,
 )
-from plant_monitor.thresholds import DEFAULT_THRESHOLDS, SPECIES_THRESHOLDS
-
-STALE_ORANGE_HOURS = 12
-STALE_RED_HOURS = 24
-BATTERY_STALE_ORANGE_HOURS = 24 * 5
-BATTERY_STALE_RED_HOURS = 24 * 10
+from plant_monitor.policy import (
+    aware,
+    numeric_state,
+    severity_for_high,
+    severity_for_low,
+    staleness,
+    staleness_for_sensor,
+    thresholds_for,
+)
 
 
 def evaluate_plant(
@@ -25,8 +28,8 @@ def evaluate_plant(
     states: dict[str, EntityState],
     now: datetime | None = None,
 ) -> PlantStatus:
-    now = _aware(now)
-    thresholds = _thresholds_for(plant)
+    now = aware(now)
+    thresholds = thresholds_for(plant)
     issues: list[Issue] = []
 
     _add_sensor_issues(issues, "moisture", plant.entities.moisture, states, now)
@@ -62,8 +65,8 @@ def watering_decision(
     requested_seconds: int | None = None,
     now: datetime | None = None,
 ) -> WateringDecision:
-    now = _aware(now)
-    thresholds = _thresholds_for(plant)
+    now = aware(now)
+    thresholds = thresholds_for(plant)
     seconds = min(requested_seconds or plant.watering.max_seconds, plant.watering.max_seconds)
     reasons: list[str] = []
 
@@ -71,10 +74,10 @@ def watering_decision(
         reasons.append("No pump entity is mapped for this plant.")
 
     moisture_state = states.get(plant.entities.moisture or "")
-    moisture = _numeric_state(moisture_state)
+    moisture = numeric_state(moisture_state)
     if moisture_state is None:
         reasons.append("No moisture sensor is mapped or available.")
-    elif _staleness(moisture_state, now) >= Severity.RED:
+    elif staleness(moisture_state, now) >= Severity.RED:
         reasons.append("Moisture sensor is stale; watering would be blind.")
     elif moisture is None:
         reasons.append("Moisture sensor state is not numeric.")
@@ -82,7 +85,7 @@ def watering_decision(
         reasons.append("Moisture is not low enough for guarded watering.")
 
     if last_watered_at:
-        cooldown_until = _aware(last_watered_at) + timedelta(hours=plant.watering.cooldown_hours)
+        cooldown_until = aware(last_watered_at) + timedelta(hours=plant.watering.cooldown_hours)
         if now < cooldown_until:
             reasons.append(f"Pump cooldown is active until {cooldown_until.isoformat()}.")
 
@@ -116,7 +119,7 @@ def _add_sensor_issues(
     if not state:
         issues.append(Issue(Severity.RED, sensor, f"{sensor} sensor {entity_id} is unavailable."))
         return
-    stale = _staleness_for_sensor(sensor, state, now)
+    stale = staleness_for_sensor(sensor, state, now)
     if stale == Severity.RED:
         issues.append(Issue(Severity.RED, sensor, f"{sensor} has not updated in 24+ hours."))
     elif stale == Severity.ORANGE:
@@ -132,12 +135,12 @@ def _add_range_issue(
     unit: str,
 ) -> None:
     state = states.get(entity_id or "")
-    value = _numeric_state(state)
+    value = numeric_state(state)
     if value is None:
         return
 
-    low = _severity_for_low(value, threshold)
-    high = _severity_for_high(value, threshold)
+    low = severity_for_low(value, threshold)
+    high = severity_for_high(value, threshold)
     severity = max(low, high)
     if severity == Severity.GREEN:
         return
@@ -152,7 +155,7 @@ def _add_battery_issue(
     states: dict[str, EntityState],
     thresholds: SpeciesThresholds,
 ) -> None:
-    value = _numeric_state(states.get(entity_id or ""))
+    value = numeric_state(states.get(entity_id or ""))
     if value is None:
         return
     if value <= thresholds.battery_red:
@@ -170,10 +173,10 @@ def _watering_recommended(
     if not plant.entities.pump or not plant.entities.moisture:
         return False
     state = states.get(plant.entities.moisture)
-    value = _numeric_state(state)
+    value = numeric_state(state)
     return (
         state is not None
-        and _staleness(state, now) == Severity.GREEN
+        and staleness(state, now) == Severity.GREEN
         and value is not None
         and thresholds.moisture.min_orange is not None
         and value < thresholds.moisture.min_orange
@@ -194,59 +197,3 @@ def _summary(
     detail = "; ".join(fragments) if fragments else "check recommended"
     return f"{plant.location} {plant.name}: {label.label} - {detail}."
 
-
-def _staleness(state: EntityState, now: datetime) -> Severity:
-    age = now - _aware(state.last_updated)
-    if age >= timedelta(hours=STALE_RED_HOURS):
-        return Severity.RED
-    if age >= timedelta(hours=STALE_ORANGE_HOURS):
-        return Severity.ORANGE
-    return Severity.GREEN
-
-
-def _staleness_for_sensor(sensor: str, state: EntityState, now: datetime) -> Severity:
-    if sensor == "battery":
-        age = now - _aware(state.last_updated)
-        if age >= timedelta(hours=BATTERY_STALE_RED_HOURS):
-            return Severity.RED
-        if age >= timedelta(hours=BATTERY_STALE_ORANGE_HOURS):
-            return Severity.ORANGE
-        return Severity.GREEN
-    return _staleness(state, now)
-
-
-def _severity_for_low(value: float, threshold: ThresholdRange) -> Severity:
-    if threshold.min_orange is not None and value < threshold.min_orange:
-        return Severity.RED
-    if threshold.min_green is not None and value < threshold.min_green:
-        return Severity.ORANGE
-    return Severity.GREEN
-
-
-def _severity_for_high(value: float, threshold: ThresholdRange) -> Severity:
-    if threshold.max_orange is not None and value > threshold.max_orange:
-        return Severity.RED
-    if threshold.max_green is not None and value > threshold.max_green:
-        return Severity.ORANGE
-    return Severity.GREEN
-
-
-def _numeric_state(state: EntityState | None) -> float | None:
-    if state is None:
-        return None
-    try:
-        return float(state.state)
-    except (TypeError, ValueError):
-        return None
-
-
-def _thresholds_for(plant: PlantConfig) -> SpeciesThresholds:
-    return plant.thresholds or SPECIES_THRESHOLDS.get(plant.species, DEFAULT_THRESHOLDS)
-
-
-def _aware(value: datetime | None) -> datetime:
-    if value is None:
-        return datetime.now(UTC)
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
