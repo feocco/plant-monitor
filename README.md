@@ -2,9 +2,9 @@
 
 A small Home Assistant companion service for plant monitoring.
 
-It uses Home Assistant `plant.*` entities as the source of truth, watches the raw
-sensor entities for freshness, sends readable notifications, and only waters
-after an explicit confirmation action.
+It watches Home Assistant plant sensor entities, keeps a small rolling state
+file, sends readable condition-based notifications, and only waters after an
+explicit confirmation action.
 
 ## Usage
 
@@ -102,9 +102,10 @@ Species defaults live in `plant_monitor/thresholds.py`.
 ### Notifications
 
 Individual alerts are sent when a plant becomes orange/red or watering is
-recommended. Repeated alerts use a backoff controlled by `ALERT_REPEAT_HOURS`.
-Delivery goes through `homelab-functions`; this service still uses Home
-Assistant credentials for state listening and pump control.
+recommended after the condition hold window passes. Repeated alerts use a
+backoff controlled by `ALERT_REPEAT_HOURS`. Delivery goes through
+`homelab-functions`; this service still uses Home Assistant credentials for
+state listening and pump control.
 
 Notification actions:
 
@@ -115,10 +116,30 @@ Notification actions:
 
 ### Thresholds and Automation
 
-- Moisture/temperature/humidity stale warning: 12 hours
+- Raw Home Assistant events update rolling sample and condition state
+- Phone alerts fire on sustained condition transitions, severity escalation, or
+  the repeat cadence
+- Moisture low hold windows are species-specific: Boston fern 8h red, ficus 24h
+  red, pothos 48h red, peperomia 72h red
+- Wet/soggy soil is treated as a diagnostic condition and only phone-alerts
+  after 72h when very wet
+- Mild temperature and humidity issues are digest-first; hard temperature
+  extremes can alert after 2h
+- Moisture/temperature/humidity stale warning: 12 hours, digest-only
 - Moisture/temperature/humidity stale red: 24 hours
 - Battery stale warning: 5 days
 - Battery stale red: 10 days
+- Battery warning is digest-only; critical battery can phone-alert
 - Watering is never automatic
 - Watering is blocked if the moisture sensor is stale, the pump is missing, the
   pump cooldown is active, or the requested run time exceeds the configured cap
+- After watering, dry alerts are suppressed for 4h and wet alerts for 6h
+
+Optional LLM alert wording:
+
+- `LLM_NOTIFICATION_TEXT=true`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+
+The LLM can only rewrite notification text. Severity, buttons, tags, URLs,
+watering eligibility, and alert timing remain deterministic.

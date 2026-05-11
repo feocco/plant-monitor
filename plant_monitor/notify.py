@@ -26,7 +26,12 @@ class Notifier:
         self.token = token
         self.timeout = timeout
 
-    async def send_urgent(self, plant: PlantConfig, status: PlantStatus) -> None:
+    async def send_urgent(
+        self,
+        plant: PlantConfig,
+        status: PlantStatus,
+        message: str | None = None,
+    ) -> None:
         title = f"{status.label.label.upper()}: {plant.location} {plant.name}"
         buttons = self._dashboard_buttons()
         buttons.append(
@@ -44,7 +49,7 @@ class Notifier:
             )
         await self._send(
             title=title,
-            message=_urgent_message(status),
+            message=message or urgent_message(status),
             tag=f"plant-monitor-{plant.id}",
             group="plant-monitor",
             url=self._dashboard_url(),
@@ -149,7 +154,7 @@ def format_digest(plants: list[PlantConfig], statuses: list[PlantStatus]) -> str
     return "\n".join(lines)
 
 
-def _urgent_message(status: PlantStatus) -> str:
+def urgent_message(status: PlantStatus) -> str:
     lines = [issue.message.rstrip(".") for issue in _display_issues(status)[:4]]
     if status.watering_recommended:
         lines.append("watering recommended")

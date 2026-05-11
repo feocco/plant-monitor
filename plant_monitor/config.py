@@ -36,6 +36,10 @@ def load_service_config(env_path: str | None = None) -> ServiceConfig:
         dry_run=os.getenv("DRY_RUN", "false").lower() in {"1", "true", "yes", "on"},
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         timezone=os.getenv("TZ", "America/New_York"),
+        openai_api_key=_optional("OPENAI_API_KEY"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        llm_notification_text=os.getenv("LLM_NOTIFICATION_TEXT", "false").lower()
+        in {"1", "true", "yes", "on"},
     )
 
 

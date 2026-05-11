@@ -6,12 +6,17 @@ import asyncio
 from rich.console import Console
 from rich.table import Table
 
+from plant_monitor.condition_engine import (
+    active_condition_records,
+    plant_statuses_from_conditions,
+    update_conditions,
+)
 from plant_monitor.config import load_plants, load_service_config
 from plant_monitor.ha import HomeAssistantClient
 from plant_monitor.logging_config import setup_logging
 from plant_monitor.models import PlantConfig, PlantStatus, Severity
 from plant_monitor.notify import Notifier
-from plant_monitor.rules import evaluate_plant
+from plant_monitor.runtime_state import RuntimeState
 
 SEVERITY_STYLES = {
     Severity.GREEN: "bold green",
@@ -28,7 +33,13 @@ async def run(send_notification: bool) -> None:
     await ha.connect()
     try:
         states = await ha.get_states()
-        statuses = [evaluate_plant(plant, states) for plant in plants]
+        runtime = RuntimeState.load(config.state_path)
+        update_conditions(plants, states, runtime)
+        statuses = plant_statuses_from_conditions(
+            plants,
+            active_condition_records(runtime),
+        )
+        runtime.save(config.state_path)
         _print_table(plants, statuses)
         if send_notification:
             notifier = Notifier(

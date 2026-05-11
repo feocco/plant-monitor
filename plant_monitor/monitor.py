@@ -6,10 +6,26 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from plant_monitor.condition_engine import (
+    POST_WATERING_DRY_SUPPRESSION,
+    POST_WATERING_WET_SUPPRESSION,
+    active_condition_records,
+    due_phone_conditions,
+    mark_notified,
+    plant_statuses_from_conditions,
+    update_conditions,
+)
 from plant_monitor.ha import HomeAssistantClient, parse_entity_state
 from plant_monitor.models import EntityState, PlantConfig, PlantStatus, ServiceConfig, Severity
-from plant_monitor.notify import Notifier, SNOOZE_ACTION_PREFIX, WATER_ACTION_PREFIX, should_send_urgent
-from plant_monitor.rules import evaluate_plant, watering_decision
+from plant_monitor.llm_text import rewrite_notification_text
+from plant_monitor.notify import (
+    Notifier,
+    SNOOZE_ACTION_PREFIX,
+    WATER_ACTION_PREFIX,
+    should_send_urgent,
+    urgent_message,
+)
+from plant_monitor.rules import watering_decision
 from plant_monitor.runtime_state import RuntimeState, ScheduledJob
 from plant_monitor.web import CallbackServer
 
@@ -115,20 +131,52 @@ class PlantMonitor:
                 plant_id = action.removeprefix(SNOOZE_ACTION_PREFIX)
                 await self.handle_snooze_request(plant_id)
 
-    async def evaluate_and_notify(self) -> list[PlantStatus]:
-        statuses = [evaluate_plant(plant, self.states) for plant in self.plants]
-        now = datetime.now(UTC)
+    async def evaluate_and_notify(self, now: datetime | None = None) -> list[PlantStatus]:
+        now = now or datetime.now(UTC)
+        update_conditions(self.plants, self.states, self.state, now)
+        active_records = active_condition_records(self.state)
+        watering_allowed = self._watering_allowed_by_plant(active_records, now)
+        statuses = plant_statuses_from_conditions(self.plants, active_records, watering_allowed)
+        phone_records_by_plant = {
+            plant.id: due_phone_conditions(
+                self.state,
+                plant.id,
+                self.config.alert_repeat_hours,
+                now,
+            )
+            for plant in self.plants
+        }
         for plant, status in zip(self.plants, statuses, strict=True):
-            previous = self.state.last_alert_label.get(plant.id)
-            current = _alert_key(status)
+            due_records = phone_records_by_plant[plant.id]
             if self._is_snoozed(plant.id):
                 continue
-            if should_send_urgent(status) and self._should_send_alert(plant.id, previous, current, now):
-                await self.notifier.send_urgent(plant, status)
+            if due_records:
+                alert_records = [
+                    record
+                    for record in active_records
+                    if record.plant_id == plant.id
+                    and (
+                        record in due_records
+                        or (record.sensor == "humidity" and record.severity == "red")
+                    )
+                ]
+                due_status = plant_statuses_from_conditions(
+                    [plant],
+                    alert_records,
+                    watering_allowed,
+                )[0]
+                message = await rewrite_notification_text(
+                    self.config,
+                    plant,
+                    due_status,
+                    urgent_message(due_status),
+                )
+                await self.notifier.send_urgent(plant, due_status, message=message)
                 if self.config.dry_run:
                     LOGGER.info("DRY_RUN alert not recorded as sent for %s", plant.id)
                 else:
-                    self.state.last_alert_label[plant.id] = current
+                    mark_notified(due_records, now)
+                    self.state.last_alert_label[plant.id] = _alert_key(due_status)
                     self.state.last_alert_sent_at[plant.id] = now
             elif status.label == Severity.GREEN and not status.watering_recommended:
                 self.state.last_alert_label.pop(plant.id, None)
@@ -172,6 +220,7 @@ class PlantMonitor:
         watered_at = datetime.now(UTC)
         baseline = _watering_snapshot(plant, self.states)
         self.state.last_watered_at[plant.id] = watered_at
+        self._apply_watering_suppression(plant.id, watered_at)
         self._schedule_watering_lookbacks(plant, watered_at, baseline)
         self.state.save(self.config.state_path)
         LOGGER.info(
@@ -208,7 +257,12 @@ class PlantMonitor:
                 and now.time() >= time(hour=16)
                 and self.state.last_weekly_key != weekly_key
             ):
-                statuses = [evaluate_plant(plant, self.states, now) for plant in self.plants]
+                update_conditions(self.plants, self.states, self.state, now)
+                statuses = plant_statuses_from_conditions(
+                    self.plants,
+                    active_condition_records(self.state),
+                    self._watering_allowed_by_plant(active_condition_records(self.state), now),
+                )
                 await self.notifier.send_weekly_digest(self.plants, statuses)
                 self.state.last_weekly_key = weekly_key
                 self.state.save(self.config.state_path)
@@ -246,20 +300,6 @@ class PlantMonitor:
         self.state.alert_snoozed_until.pop(plant_id, None)
         return False
 
-    def _should_send_alert(
-        self,
-        plant_id: str,
-        previous_key: str | None,
-        current_key: str,
-        now: datetime,
-    ) -> bool:
-        if previous_key != current_key:
-            return True
-        sent_at = self.state.last_alert_sent_at.get(plant_id)
-        if sent_at is None:
-            return True
-        return now - sent_at.astimezone(UTC) >= timedelta(hours=self.config.alert_repeat_hours)
-
     def _log_startup_health(self, statuses: list[PlantStatus]) -> None:
         counts = _status_counts(statuses)
         LOGGER.info(
@@ -267,8 +307,45 @@ class PlantMonitor:
             counts[Severity.GREEN],
             counts[Severity.ORANGE],
             counts[Severity.RED],
-            _next_alert_summary(self.plants, statuses, self.state, self.config.alert_repeat_hours),
+            _next_alert_summary(
+                self.plants,
+                statuses,
+                self.state,
+                self.config.alert_repeat_hours,
+            ),
         )
+
+    def _watering_allowed_by_plant(
+        self,
+        records,
+        now: datetime,
+    ) -> dict[str, bool]:
+        allowed: dict[str, bool] = {}
+        for plant in self.plants:
+            if not any(
+                record.plant_id == plant.id and record.watering_candidate
+                for record in records
+            ):
+                allowed[plant.id] = False
+                continue
+            allowed[plant.id] = watering_decision(
+                plant,
+                self.states,
+                self.state.last_watered_at.get(plant.id),
+                now=now,
+            ).allowed
+        return allowed
+
+    def _apply_watering_suppression(self, plant_id: str, watered_at: datetime) -> None:
+        for record in self.state.condition_records.values():
+            if record.plant_id != plant_id:
+                continue
+            if record.kind == "moisture_low":
+                record.suppressed_until = watered_at + POST_WATERING_DRY_SUPPRESSION
+                record.last_notified_at = None
+            elif record.kind == "moisture_high":
+                record.suppressed_until = watered_at + POST_WATERING_WET_SUPPRESSION
+                record.last_notified_at = None
 
     def _schedule_watering_lookbacks(
         self,
@@ -382,6 +459,26 @@ def _next_alert_summary(
 ) -> str:
     now = now or datetime.now(UTC)
     next_times: list[datetime] = []
+    if state.condition_records:
+        plant_ids = {plant.id for plant in plants}
+        for record in active_condition_records(state):
+            if record.plant_id not in plant_ids or not record.phone_alert:
+                continue
+            if record.suppressed_until and now < record.suppressed_until.astimezone(UTC):
+                next_times.append(record.suppressed_until.astimezone(UTC))
+                continue
+            snoozed_until = state.alert_snoozed_until.get(record.plant_id)
+            if snoozed_until and now < snoozed_until.astimezone(UTC):
+                next_times.append(snoozed_until.astimezone(UTC))
+                continue
+            if record.last_notified_at is None:
+                next_times.append(now)
+                continue
+            next_times.append(
+                record.last_notified_at.astimezone(UTC) + timedelta(hours=repeat_hours)
+            )
+        return _format_next_alert(next_times, now)
+
     for plant, status in zip(plants, statuses, strict=True):
         if not should_send_urgent(status):
             continue
@@ -398,6 +495,10 @@ def _next_alert_summary(
 
         next_times.append(sent_at.astimezone(UTC) + timedelta(hours=repeat_hours))
 
+    return _format_next_alert(next_times, now)
+
+
+def _format_next_alert(next_times: list[datetime], now: datetime) -> str:
     if not next_times:
         return "none"
     next_alert_at = min(next_times)

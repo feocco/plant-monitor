@@ -13,12 +13,18 @@ def test_load_service_config_reads_homelab_functions_settings(
     monkeypatch.setenv("HA_LONG_LIVED_TOKEN", "ha-token")
     monkeypatch.setenv("HOMELAB_FUNCTIONS_URL", "http://homelab-functions:8091")
     monkeypatch.setenv("HOMELAB_FUNCTIONS_TOKEN", "functions-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.setenv("LLM_NOTIFICATION_TEXT", "true")
 
     config = load_service_config(str(tmp_path / ".env"))
 
     assert config.ha_url == "http://homeassistant.local:8123"
     assert config.homelab_functions_url == "http://homelab-functions:8091"
     assert config.homelab_functions_token == "functions-token"
+    assert config.openai_api_key == "sk-test"
+    assert config.openai_model == "gpt-test"
+    assert config.llm_notification_text
 
 
 def test_load_plants_parses_entities_and_watering(tmp_path: Path) -> None:

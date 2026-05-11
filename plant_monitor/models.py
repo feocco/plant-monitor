@@ -82,6 +82,9 @@ class ServiceConfig:
     dry_run: bool
     log_level: str
     timezone: str
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4.1-mini"
+    llm_notification_text: bool = False
 
 
 @dataclass
