@@ -2,11 +2,11 @@
 
 A small Home Assistant companion service for plant monitoring.
 
-It watches Home Assistant plant sensor entities, keeps a small rolling state
-file, sends readable condition-based notifications, and only waters after an
-explicit confirmation action.
+The service reads plant state from Home Assistant, keeps recent local state,
+turns sustained problems into plant conditions, sends quiet phone
+notifications, and only runs watering pumps after an explicit confirmation.
 
-## Usage
+## Quick Start
 
 Install locally:
 
@@ -17,24 +17,27 @@ source .venv/bin/activate
 plant --help
 ```
 
-Or use the local install helper:
+Or use the helper:
 
 ```bash
 scripts/install_local.sh
 ```
 
-Fill in `.env` with:
+Create `.env` from `.env.example`, then fill in at least:
 
-- `HA_URL`
-- `HA_LONG_LIVED_TOKEN`
-- `HOMELAB_FUNCTIONS_URL`
-- `HOMELAB_FUNCTIONS_TOKEN`
-- `HA_PLANTS_DASHBOARD_URL`
+```bash
+HA_URL=http://homeassistant.local:8123
+HA_LONG_LIVED_TOKEN=replace_me
+HOMELAB_FUNCTIONS_URL=http://homelab-functions:8091
+HOMELAB_FUNCTIONS_TOKEN=replace_me
+HA_PLANTS_DASHBOARD_URL=/lovelace/plants
+```
 
 Typical first run:
 
 ```bash
-# Writes plants.discovered.yaml by default. Review it before replacing plants.yaml.
+# Writes plants.discovered.yaml by default.
+# Review it before replacing plants.yaml.
 plant discover
 
 plant status
@@ -42,104 +45,180 @@ plant status --notify
 plant monitor
 ```
 
-## CLI
+## Configuration
 
-`plant discover`
-
-Discovers live Home Assistant `plant.*` entities and proposes a clean
-`plants.discovered.yaml` file. Use `--write` when you want discovery to replace
-the configured `plants.yaml`.
-
-`plant status`
-
-Prints the current plant status as a color-coded table. Add `--notify` to send a
-one-time notification digest through homelab-functions.
-
-`plant monitor`
-
-Runs the long-lived monitor. It listens for Home Assistant state changes,
-sends individual plant alerts, handles notification actions, and runs the weekly
-digest.
-
-## Build
-
-Build a local Docker image:
-
-```bash
-scripts/build_image.sh
-```
-
-Docker registry publishing is intentionally not wired yet. The deployment flow
-will be updated once the target registry is available.
-
-## Docs
-
-### Configuration
-
-Local-only files are ignored by git:
+Local runtime files are intentionally ignored by git:
 
 - `.env`
 - `plants.yaml`
 - `plants.discovered.yaml`
 - `data/`
 
-Use `.env.example` as the environment template. `plants.yaml` is generated from
-Home Assistant discovery and is intentionally ignored by git.
+Environment configuration lives in `.env`. The main values are:
 
-### Data Model
+- `HA_URL`, `HA_LONG_LIVED_TOKEN`: Home Assistant connection.
+- `HOMELAB_FUNCTIONS_URL`, `HOMELAB_FUNCTIONS_TOKEN`: phone notification service.
+- `HA_PLANTS_DASHBOARD_URL`: target opened from notification actions.
+- `CONFIG_PATH`: plant config path, default `plants.yaml`.
+- `STATE_PATH`: runtime state path, default `data/state.json`.
+- `SERVICE_HOST`, `SERVICE_PORT`, `SERVICE_CALLBACK_TOKEN`: callback and health server.
+- `ALERT_REPEAT_HOURS`: repeat cadence for active phone-alert conditions.
+- `ALERT_SNOOZE_HOURS`: delay duration for the notification snooze action.
+- `DRY_RUN`: connect and evaluate without recording real alert sends.
 
-Each plant is one object in `plants.yaml`:
-
-- `plant_entity`: canonical Home Assistant `plant.*` entity
-- `sensors`: raw moisture, temperature, battery, brightness, etc.
-- `watering`: optional switch plus duration/cooldown
-- `thresholds`: optional per-plant overrides
-- `species`: selects fallback thresholds when Home Assistant does not expose
-  plant-specific threshold data
-
-Species defaults live in `plant_monitor/thresholds.py`.
-
-### Notifications
-
-Individual alerts are sent when a plant becomes orange/red or watering is
-recommended after the condition hold window passes. Repeated alerts use a
-backoff controlled by `ALERT_REPEAT_HOURS`. Delivery goes through
-`homelab-functions`; this service still uses Home Assistant credentials for
-state listening and pump control.
-
-Notification actions:
-
-- `Open Plants`: opens `HA_PLANTS_DASHBOARD_URL`
-- `Delay 24h`: suppresses individual alerts for that plant
-- watering confirmation appears only when watering is recommended and a watering
-  switch is configured
-
-### Thresholds and Automation
-
-- Raw Home Assistant events update rolling sample and condition state
-- Phone alerts fire on sustained condition transitions, severity escalation, or
-  the repeat cadence
-- Moisture low hold windows are species-specific: Boston fern 8h red, ficus 24h
-  red, pothos 48h red, peperomia 72h red
-- Wet/soggy soil is treated as a diagnostic condition and only phone-alerts
-  after 72h when very wet
-- Mild temperature and humidity issues are digest-first; hard temperature
-  extremes can alert after 2h
-- Moisture/temperature/humidity stale warning: 12 hours, digest-only
-- Moisture/temperature/humidity stale red: 24 hours
-- Battery stale warning: 5 days
-- Battery stale red: 10 days
-- Battery warning is digest-only; critical battery can phone-alert
-- Watering is never automatic
-- Watering is blocked if the moisture sensor is stale, the pump is missing, the
-  pump cooldown is active, or the requested run time exceeds the configured cap
-- After watering, dry alerts are suppressed for 4h and wet alerts for 6h
-
-Optional LLM alert wording:
+Optional LLM text rewriting:
 
 - `LLM_NOTIFICATION_TEXT=true`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 
-The LLM can only rewrite notification text. Severity, buttons, tags, URLs,
-watering eligibility, and alert timing remain deterministic.
+The LLM only rewrites message text. Rule decisions, severity, alert timing,
+watering eligibility, tags, URLs, and buttons remain deterministic.
+
+## Plant Config
+
+Each plant is one object in `plants.yaml`:
+
+```yaml
+plants:
+  - id: ficus_altissima_sun_room
+    name: Ficus Altissima
+    location: Sun room
+    species: ficus_altissima
+    plant_entity: plant.ficus_altissma_sun_room
+    sensors:
+      moisture: sensor.ficus_altissma_sun_room_moisture
+      temperature: sensor.ficus_altissma_sun_room_temperature
+      humidity: sensor.ficus_altissma_sun_room_humidity
+      battery: sensor.ficus_altissma_sun_room_battery
+      brightness: sensor.ficus_altissma_sun_room_illuminance
+    watering:
+      switch: switch.back_sun_room_watering_kit
+      max_seconds: 10
+      cooldown_hours: 48
+    thresholds:
+      moisture:
+        min_green: 25
+        min_orange: 15
+      battery:
+        orange: 30
+        red: 15
+```
+
+Discovery reads live Home Assistant `plant.*` entities and related sensors. It
+writes a proposed config, but the reviewed `plants.yaml` is the source of truth
+for normal runs.
+
+Threshold sources, in order:
+
+1. Per-plant overrides in `plants.yaml`.
+2. Species defaults in `plant_monitor/thresholds.py`.
+3. Conservative fallback defaults.
+
+## Running
+
+Print current status:
+
+```bash
+plant status
+```
+
+Send a one-time digest notification:
+
+```bash
+plant status --notify
+```
+
+Run the long-lived service:
+
+```bash
+plant monitor
+```
+
+Run with Docker Compose:
+
+```bash
+docker compose up -d --build
+docker logs -f plant-monitor
+```
+
+Build only:
+
+```bash
+scripts/build_image.sh
+```
+
+Images are published to GHCR by `.github/workflows/container.yml` when `main` is
+pushed. NAS runtime config and deployment live outside this repo in
+`homelab-config`.
+
+## Architecture
+
+High-level flow:
+
+```text
+Home Assistant WebSocket
+  -> plant_monitor.ha
+  -> PlantMonitor state cache
+  -> condition_engine records samples and sustained conditions
+  -> plant statuses
+  -> NotificationPlanner decides what is due
+  -> Notifier sends phone notifications through homelab-functions
+```
+
+The service uses Home Assistant WebSocket events for live updates and performs
+periodic `get_states` reconciliation so missed events do not permanently stale
+the local view.
+
+Phone alerts are intentionally quiet:
+
+- Raw readings create condition candidates immediately.
+- Candidates become active only after their hold window passes.
+- Notifications send on activation, repeat cadence, or severity-relevant active
+  conditions.
+- Numeric drift inside the same active condition does not keep retriggering.
+- Lower-priority observations can appear in the weekly digest without becoming
+  immediate phone alerts.
+
+Watering is guarded:
+
+- Watering is never automatic.
+- A water button appears only when an active moisture-low condition is high
+  confidence and the watering guard passes.
+- Watering is blocked for stale moisture data, missing pump mapping, active pump
+  cooldown, or a duration above the configured cap.
+- After watering, dry alerts are suppressed briefly and wet/soggy observations
+  are suppressed longer.
+- The service schedules 1-hour and 4-hour lookbacks to report whether moisture
+  or humidity changed after watering.
+
+## Components
+
+- `plant_monitor/cli.py`: `plant discover`, `plant status`, `plant monitor`.
+- `plant_monitor/config.py`: `.env` and `plants.yaml` loading.
+- `plant_monitor/discovery.py`: live Home Assistant discovery.
+- `plant_monitor/ha.py`: Home Assistant WebSocket client wrapper.
+- `plant_monitor/monitor.py`: long-running orchestration, reconnects, loops, event handling.
+- `plant_monitor/condition_engine.py`: samples, hold windows, active condition lifecycle.
+- `plant_monitor/policy.py`: shared threshold and sensor helpers.
+- `plant_monitor/thresholds.py`: species defaults.
+- `plant_monitor/notification_planner.py`: decides which active conditions should notify now.
+- `plant_monitor/notify.py`: digest and phone notification formatting/sending.
+- `plant_monitor/watering.py`: watering guard, pump execution, watering lookbacks.
+- `plant_monitor/web.py`: health and callback server.
+- `plant_monitor/runtime_state.py`: persisted `data/state.json`.
+
+## Tests
+
+Run the test suite:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Useful smoke checks before deploying:
+
+```bash
+plant status
+docker build -t plant-monitor:local .
+```
