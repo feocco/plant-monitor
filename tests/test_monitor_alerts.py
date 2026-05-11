@@ -4,14 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 from plant_monitor.monitor import (
     PlantMonitor,
-    SensorReading,
     _alert_key,
     _next_alert_summary,
     _status_counts,
-    _watering_lookback_message,
 )
 from plant_monitor.models import EntityMap, EntityState, Issue, PlantConfig, PlantStatus, ServiceConfig, Severity
 from plant_monitor.runtime_state import RuntimeState
+from plant_monitor.watering import SensorReading, _watering_lookback_message
 
 NOW = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
 

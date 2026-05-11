@@ -4,8 +4,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from plant_monitor.models import EntityMap, EntityState, PlantConfig, ServiceConfig
-from plant_monitor.monitor import PlantMonitor, SensorReading, _watering_lookback_job
+from plant_monitor.monitor import PlantMonitor
 from plant_monitor.runtime_state import RuntimeState
+from plant_monitor.watering import SensorReading, _watering_lookback_job
 
 NOW = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
 
@@ -37,8 +38,9 @@ async def test_due_watering_lookback_sends_message_and_removes_job(tmp_path: Pat
     )
     notifier = _FakeNotifier()
     monitor.notifier = notifier
+    monitor.watering.notifier = notifier
 
-    await monitor._run_due_scheduled_jobs(now=NOW)
+    await monitor.watering.run_due_scheduled_jobs(now=NOW)
 
     assert state.scheduled_jobs == []
     assert RuntimeState.load(state_path).scheduled_jobs == []
@@ -79,8 +81,9 @@ async def test_due_watering_lookback_stays_queued_when_notification_fails(tmp_pa
         state,
     )
     monitor.notifier = _FakeNotifier(fail=True)
+    monitor.watering.notifier = monitor.notifier
 
-    await monitor._run_due_scheduled_jobs(now=NOW)
+    await monitor.watering.run_due_scheduled_jobs(now=NOW)
 
     assert state.scheduled_jobs == [job]
     assert RuntimeState.load(state_path).scheduled_jobs == [job]
