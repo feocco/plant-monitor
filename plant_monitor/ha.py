@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
+from aiohttp import ClientError
 from homelab import HomeAssistantConfig, HomeAssistantWebSocketClient, websocket_url
 
 from plant_monitor.models import EntityState, ServiceConfig
@@ -23,14 +24,8 @@ class HomeAssistantClient:
 
     def __init__(self, config: ServiceConfig) -> None:
         self.config = config
-        self._client = HomeAssistantWebSocketClient(
-            HomeAssistantConfig(
-                ha_url=config.ha_url,
-                ha_long_lived_token=config.ha_token,
-            )
-        )
         self._event_handlers: list[EventHandler] = []
-        self._client.add_event_handler(self._dispatch_event)
+        self._client = self._new_client()
 
     async def connect(self) -> None:
         try:
@@ -41,7 +36,12 @@ class HomeAssistantClient:
             raise
 
     async def close(self) -> None:
-        await self._client.close()
+        try:
+            await self._client.close()
+        except ClientError:
+            LOGGER.warning("Ignoring Home Assistant WebSocket cleanup error", exc_info=True)
+        finally:
+            self._client = self._new_client()
 
     async def wait_closed(self) -> None:
         await self._client.wait_closed()
@@ -81,6 +81,16 @@ class HomeAssistantClient:
                 await handler(event)
             except Exception:
                 LOGGER.exception("Event handler failed")
+
+    def _new_client(self) -> HomeAssistantWebSocketClient:
+        client = HomeAssistantWebSocketClient(
+            HomeAssistantConfig(
+                ha_url=self.config.ha_url,
+                ha_long_lived_token=self.config.ha_token,
+            )
+        )
+        client.add_event_handler(self._dispatch_event)
+        return client
 
 
 def parse_entity_state(raw: dict[str, Any]) -> EntityState:

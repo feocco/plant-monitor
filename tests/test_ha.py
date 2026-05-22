@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from aiohttp.client_exceptions import ClientConnectionResetError
+
 from plant_monitor.ha import HomeAssistantClient, _websocket_url, parse_entity_state
 from plant_monitor.models import ServiceConfig
 
@@ -81,6 +84,33 @@ async def test_wait_closed_delegates_to_shared_client() -> None:
     assert shared_client.wait_closed_called
 
 
+async def test_close_ignores_cleanup_reset_and_replaces_shared_client() -> None:
+    client = HomeAssistantClient(_config())
+    broken_client = _FakeSharedClient(close_error=ClientConnectionResetError("closed"))
+    replacement_client = _FakeSharedClient()
+    client._client = broken_client
+    client._new_client = lambda: replacement_client
+
+    await client.close()
+
+    assert broken_client.close_called
+    assert client._client is replacement_client
+
+
+async def test_connect_failure_closes_and_replaces_shared_client() -> None:
+    client = HomeAssistantClient(_config())
+    broken_client = _FakeSharedClient(connect_error=RuntimeError("connect failed"))
+    replacement_client = _FakeSharedClient()
+    client._client = broken_client
+    client._new_client = lambda: replacement_client
+
+    with pytest.raises(RuntimeError, match="connect failed"):
+        await client.connect()
+
+    assert broken_client.close_called
+    assert client._client is replacement_client
+
+
 async def test_event_dispatch_continues_after_handler_failure() -> None:
     client = HomeAssistantClient(_config())
     handled: list[dict] = []
@@ -100,10 +130,27 @@ async def test_event_dispatch_continues_after_handler_failure() -> None:
 
 
 class _FakeSharedClient:
-    def __init__(self, states: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        states: list[dict] | None = None,
+        connect_error: Exception | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
         self.states = states or []
+        self.connect_error = connect_error
+        self.close_error = close_error
+        self.close_called = False
         self.service_calls: list[tuple[str, str, dict]] = []
         self.wait_closed_called = False
+
+    async def connect(self) -> None:
+        if self.connect_error:
+            raise self.connect_error
+
+    async def close(self) -> None:
+        self.close_called = True
+        if self.close_error:
+            raise self.close_error
 
     async def get_states(self) -> list[dict]:
         return self.states
