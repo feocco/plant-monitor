@@ -6,29 +6,32 @@ Plant Monitor is a long-running Home Assistant-backed service.
 
 ```mermaid
 flowchart LR
-    HA["Home Assistant"]
-    PM["Plant Monitor"]
-    HF["homelab-functions"]
-    Phone["Joe's phone"]
-    Pump["Watering kit switches"]
-    State["data/state.json"]
-    Config["plants.yaml + .env"]
-    Probe["Blackbox health probe"]
+    subgraph Input["Input"]
+        HAIn["Home Assistant<br/>plant entities, sensors, events"]
+    end
 
-    Config --> PM
-    HA <-->|"WebSocket state, events, service calls"| PM
-    PM -->|"phone notifications"| HF
-    HF --> Phone
-    Phone -->|"notification actions"| HA
-    PM -->|"guarded switch.turn_on/off"| Pump
-    Pump --> HA
-    PM <-->|"condition state, samples, alert history"| State
-    Probe -->|"GET /health"| PM
+    PM["Plant Monitor"]
+
+    subgraph Output["Output"]
+        HF["homelab-functions<br/>phone notifications"]
+        HAOut["Home Assistant<br/>notification actions, switch service calls"]
+        Pump["Watering kit switches"]
+    end
+
+    RuntimeState["local runtime state<br/>condition windows, samples, alert history"]
+
+    HAIn -->|"WebSocket get_states + events"| PM
+    PM -->|"notify Joe"| HF
+    PM -->|"call Home Assistant services"| HAOut
+    HAOut -->|"switch.turn_on/off"| Pump
+    PM <-->|"persist between restarts"| RuntimeState
 ```
 
 Plant Monitor is the domain service. Home Assistant remains the source of
-truth for current entity state and actions. `homelab-functions` is only the
-shared notification path.
+truth for current entity state and device actions. `homelab-functions` is only
+the shared notification path. The local runtime state file is not a database; it
+is a small persisted state file so condition windows, recent samples, alert
+history, snoozes, and watering lookbacks survive restarts.
 
 ## Runtime Data Flow
 
