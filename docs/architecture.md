@@ -2,21 +2,75 @@
 
 Plant Monitor is a long-running Home Assistant-backed service.
 
-## Flow
+## System Context
 
-```text
-Home Assistant WebSocket
-  -> plant_monitor.ha
-  -> PlantMonitor state cache
-  -> condition_engine records samples and sustained conditions
-  -> plant statuses
-  -> NotificationPlanner decides what is due
-  -> Notifier sends phone notifications through homelab-functions
+```mermaid
+flowchart LR
+    HA["Home Assistant"]
+    PM["Plant Monitor"]
+    HF["homelab-functions"]
+    Phone["Joe's phone"]
+    Pump["Watering kit switches"]
+    State["data/state.json"]
+    Config["plants.yaml + .env"]
+    Probe["Blackbox health probe"]
+
+    Config --> PM
+    HA <-->|"WebSocket state, events, service calls"| PM
+    PM -->|"phone notifications"| HF
+    HF --> Phone
+    Phone -->|"notification actions"| HA
+    PM -->|"guarded switch.turn_on/off"| Pump
+    Pump --> HA
+    PM <-->|"condition state, samples, alert history"| State
+    Probe -->|"GET /health"| PM
 ```
 
-The service uses Home Assistant WebSocket events for live updates and performs
-periodic `get_states` reconciliation so missed events do not permanently stale
-the local view.
+Plant Monitor is the domain service. Home Assistant remains the source of
+truth for current entity state and actions. `homelab-functions` is only the
+shared notification path.
+
+## Runtime Data Flow
+
+```mermaid
+flowchart TD
+    Startup["startup"]
+    LoadConfig["load .env and plants.yaml"]
+    LoadState["load data/state.json"]
+    Connect["connect to Home Assistant WebSocket"]
+    InitialStates["get_states initial snapshot"]
+    Cache["in-memory entity state cache"]
+    Events["state_changed events"]
+    Reconcile["hourly get_states reconciliation"]
+    Conditions["condition_engine: samples, hold windows, active conditions"]
+    Statuses["plant statuses"]
+    Planner["NotificationPlanner"]
+    Notify["Notifier"]
+    SaveState["save data/state.json"]
+    Web["callback and health server"]
+    Scheduled["scheduled jobs"]
+    Watering["WateringService"]
+
+    Startup --> LoadConfig --> Connect
+    Startup --> LoadState --> Conditions
+    Connect --> InitialStates --> Cache
+    Connect --> Events --> Cache
+    Reconcile --> Cache
+    Cache --> Conditions --> Statuses --> Planner
+    Planner --> Notify
+    Conditions --> SaveState
+    Planner --> SaveState
+    Startup --> Web
+    Web --> Watering
+    Scheduled --> Watering
+    Watering --> SaveState
+    Watering --> Notify
+```
+
+The monitor updates the cache from live Home Assistant events and also refreshes
+it with periodic reconciliation so missed events do not permanently stale the
+local view. The condition engine owns rule state; the planner decides whether an
+active condition should notify now.
 
 ## Components
 
