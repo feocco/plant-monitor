@@ -22,6 +22,29 @@ async def test_run_connected_returns_when_ha_connection_closes(tmp_path: Path) -
     assert callback_server.stopped
 
 
+async def test_run_connected_cleans_up_when_startup_evaluation_fails(tmp_path: Path) -> None:
+    ha = _FakeHA()
+    monitor = PlantMonitor(_config(tmp_path / "state.json"), [], ha, RuntimeState())
+    callback_server = _FakeCallbackServer()
+    monitor.callback_server = callback_server
+
+    async def raise_after_callback_start(now=None):
+        raise RuntimeError("notification failed")
+
+    monitor.evaluate_and_notify = raise_after_callback_start
+
+    try:
+        await monitor._run_connected()
+    except RuntimeError as exc:
+        assert str(exc) == "notification failed"
+    else:
+        raise AssertionError("expected startup failure")
+
+    assert callback_server.started
+    assert callback_server.stopped
+    assert ha.closed
+
+
 class _FakeHA:
     def __init__(self) -> None:
         self.connected = False

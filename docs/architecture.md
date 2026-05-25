@@ -97,6 +97,8 @@ Phone alerts are intentionally quiet:
 
 - Raw readings create condition candidates immediately.
 - Candidates become active only after their hold window passes.
+- Missing or `unavailable` sensor states must persist for 10 minutes before
+  they can trigger a phone alert, which filters Home Assistant restart noise.
 - Notifications send on activation, repeat cadence, or severity-relevant active
   conditions.
 - Numeric drift inside the same active condition does not keep retriggering.

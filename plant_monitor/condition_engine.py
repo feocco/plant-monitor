@@ -21,9 +21,11 @@ SOGGY_HOLD = timedelta(hours=72)
 TEMPERATURE_MILD_HOLD = timedelta(hours=24)
 TEMPERATURE_EXTREME_HOLD = timedelta(hours=2)
 HUMIDITY_HOLD = timedelta(hours=24)
+UNAVAILABLE_HOLD = timedelta(minutes=10)
 HARD_TEMPERATURE_LOW = 50.0
 HARD_TEMPERATURE_HIGH = 95.0
 HIGH_BRIGHTNESS_LX = 2000.0
+UNAVAILABLE_STATES = {"unknown", "unavailable"}
 
 MOISTURE_LOW_HOLDS = {
     "boston_fern": {
@@ -217,16 +219,21 @@ def _freshness_candidates(
     for sensor, entity_id in _plant_sensor_entities(plant):
         state = states.get(entity_id)
         kind = f"{sensor}_unavailable"
-        if state is None:
+        if state is None or state.state.lower() in UNAVAILABLE_STATES:
+            status = (
+                "is missing from the Home Assistant state snapshot"
+                if state is None
+                else f"reported {state.state}"
+            )
             candidates.append(
                 ConditionCandidate(
                     plant_id=plant.id,
                     kind=kind,
                     sensor=sensor,
                     severity=Severity.RED,
-                    message=f"{sensor} sensor {entity_id} is unavailable.",
+                    message=f"{sensor} sensor {entity_id} {status}.",
                     value=None,
-                    hold=timedelta(0),
+                    hold=UNAVAILABLE_HOLD,
                     phone_alert=True,
                 )
             )

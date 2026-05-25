@@ -38,6 +38,45 @@ def test_condition_activates_only_after_hold_window() -> None:
     assert due_phone_conditions(runtime, plant.id, 24, NOW + timedelta(hours=24))
 
 
+def test_transient_missing_sensor_does_not_activate_unavailable_alert() -> None:
+    plant = _plant("golden_pothos")
+    runtime = RuntimeState()
+    missing_battery = _states(updated=NOW)
+    missing_battery.pop("sensor.battery")
+
+    update_conditions([plant], missing_battery, runtime, NOW)
+
+    assert active_condition_records(runtime) == []
+
+    update_conditions(
+        [plant],
+        _states(updated=NOW + timedelta(minutes=2)),
+        runtime,
+        NOW + timedelta(minutes=2),
+    )
+
+    assert active_condition_records(runtime) == []
+    assert runtime.condition_records[
+        "plant_golden_pothos:battery_unavailable:red"
+    ].resolved_at
+
+
+def test_missing_sensor_activates_unavailable_alert_after_hold_window() -> None:
+    plant = _plant("golden_pothos")
+    runtime = RuntimeState()
+    missing_battery = _states(updated=NOW)
+    missing_battery.pop("sensor.battery")
+
+    update_conditions([plant], missing_battery, runtime, NOW)
+    update_conditions([plant], missing_battery, runtime, NOW + timedelta(minutes=10))
+
+    active = active_condition_records(runtime)
+    assert [record.key for record in active] == [
+        "plant_golden_pothos:battery_unavailable:red"
+    ]
+    assert due_phone_conditions(runtime, plant.id, 24, NOW + timedelta(minutes=10))
+
+
 def test_active_condition_does_not_retrigger_for_numeric_drift_until_repeat() -> None:
     plant = _plant("ficus_altissima")
     runtime = RuntimeState()

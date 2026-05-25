@@ -75,26 +75,30 @@ class PlantMonitor:
                 await asyncio.sleep(15)
 
     async def _run_connected(self) -> None:
-        await self.ha.connect()
-        self.states = await self.ha.get_states()
-        await self.ha.subscribe_events("state_changed")
-        await self.ha.subscribe_events("mobile_app_notification_action")
-        await self.callback_server.start()
-        if self.state.last_dry_run is not False and not self.config.dry_run and self.state.last_alert_label:
-            LOGGER.info("Clearing previous alert memory before first real notification run")
-            self.state.last_alert_label.clear()
-        self.state.last_dry_run = self.config.dry_run
-        statuses = await self.evaluate_and_notify()
-        self._log_startup_health(statuses)
-        ha_closed_task = asyncio.create_task(self.ha.wait_closed(), name="ha-websocket-watch")
-        tasks = [
-            ha_closed_task,
-            asyncio.create_task(self._reconcile_loop(), name="plant-reconcile-loop"),
-            asyncio.create_task(self._weekly_loop(), name="plant-weekly-loop"),
-            asyncio.create_task(self._scheduled_job_loop(), name="plant-scheduled-job-loop"),
-        ]
-
+        tasks: list[asyncio.Task] = []
         try:
+            await self.ha.connect()
+            self.states = await self.ha.get_states()
+            await self.ha.subscribe_events("state_changed")
+            await self.ha.subscribe_events("mobile_app_notification_action")
+            await self.callback_server.start()
+            if (
+                self.state.last_dry_run is not False
+                and not self.config.dry_run
+                and self.state.last_alert_label
+            ):
+                LOGGER.info("Clearing previous alert memory before first real notification run")
+                self.state.last_alert_label.clear()
+            self.state.last_dry_run = self.config.dry_run
+            statuses = await self.evaluate_and_notify()
+            self._log_startup_health(statuses)
+            ha_closed_task = asyncio.create_task(self.ha.wait_closed(), name="ha-websocket-watch")
+            tasks = [
+                ha_closed_task,
+                asyncio.create_task(self._reconcile_loop(), name="plant-reconcile-loop"),
+                asyncio.create_task(self._weekly_loop(), name="plant-weekly-loop"),
+                asyncio.create_task(self._scheduled_job_loop(), name="plant-scheduled-job-loop"),
+            ]
             done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
