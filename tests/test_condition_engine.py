@@ -141,6 +141,9 @@ def test_plant_specific_moisture_windows() -> None:
         "ficus_altissima": 24,
         "golden_pothos": 48,
         "peperomia_jelly": 72,
+        "outdoor_mixed_vegetable_container": 12,
+        "outdoor_mixed_annual_hanging_basket": 8,
+        "fuchsia_hanging_basket": 8,
     }
     for species, red_hours in cases.items():
         plant = _plant(species)

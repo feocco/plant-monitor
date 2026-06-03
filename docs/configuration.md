@@ -96,7 +96,8 @@ Common fields:
 - `id`: stable slug used in state, notification tags, and watering callbacks.
 - `name`, `location`: human-facing labels.
 - `species`: selects defaults from `plant_monitor/thresholds.py`.
-- `plant_entity`: canonical Home Assistant `plant.*` entity when available.
+- `plant_entity`: canonical Home Assistant `plant.*` entity when available;
+  omit or leave blank for sensor-only plants.
 - `sensors`: raw Home Assistant entities used for freshness, trends, and rules.
 - `watering`: optional pump switch, max duration, and cooldown.
 - `thresholds`: optional per-plant overrides.

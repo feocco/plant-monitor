@@ -24,6 +24,21 @@ SPECIES_THRESHOLDS: dict[str, SpeciesThresholds] = {
         temperature=ThresholdRange(min_green=60, min_orange=55, max_green=85, max_orange=90),
         humidity=ThresholdRange(min_green=35, min_orange=25),
     ),
+    "outdoor_mixed_vegetable_container": SpeciesThresholds(
+        moisture=ThresholdRange(min_green=35, min_orange=25, max_green=80, max_orange=90),
+        temperature=ThresholdRange(min_green=45, min_orange=40, max_green=95, max_orange=100),
+        humidity=ThresholdRange(min_green=30, min_orange=20),
+    ),
+    "outdoor_mixed_annual_hanging_basket": SpeciesThresholds(
+        moisture=ThresholdRange(min_green=35, min_orange=25, max_green=88, max_orange=95),
+        temperature=ThresholdRange(min_green=45, min_orange=40, max_green=95, max_orange=100),
+        humidity=ThresholdRange(min_green=30, min_orange=20),
+    ),
+    "fuchsia_hanging_basket": SpeciesThresholds(
+        moisture=ThresholdRange(min_green=40, min_orange=30, max_green=88, max_orange=95),
+        temperature=ThresholdRange(min_green=45, min_orange=40, max_green=90, max_orange=95),
+        humidity=ThresholdRange(min_green=35, min_orange=25),
+    ),
 }
 
 DEFAULT_THRESHOLDS = SpeciesThresholds(

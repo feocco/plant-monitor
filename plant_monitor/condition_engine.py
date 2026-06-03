@@ -44,6 +44,18 @@ MOISTURE_LOW_HOLDS = {
         Severity.ORANGE: timedelta(hours=48),
         Severity.RED: timedelta(hours=72),
     },
+    "outdoor_mixed_vegetable_container": {
+        Severity.ORANGE: timedelta(hours=6),
+        Severity.RED: timedelta(hours=12),
+    },
+    "outdoor_mixed_annual_hanging_basket": {
+        Severity.ORANGE: timedelta(hours=4),
+        Severity.RED: timedelta(hours=8),
+    },
+    "fuchsia_hanging_basket": {
+        Severity.ORANGE: timedelta(hours=4),
+        Severity.RED: timedelta(hours=8),
+    },
 }
 
 DEFAULT_MOISTURE_LOW_HOLDS = {
