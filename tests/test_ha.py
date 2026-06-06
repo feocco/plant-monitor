@@ -23,11 +23,14 @@ def test_parse_entity_state_handles_zulu_timestamps() -> None:
             "attributes": {"friendly_name": "Moisture"},
             "last_changed": "2026-05-02T12:00:00Z",
             "last_updated": "2026-05-02T12:05:00Z",
+            "last_reported": "2026-05-02T12:06:00Z",
         }
     )
 
     assert state.entity_id == "sensor.moisture"
     assert state.last_updated.isoformat() == "2026-05-02T12:05:00+00:00"
+    assert state.last_reported is not None
+    assert state.freshness_timestamp.isoformat() == "2026-05-02T12:06:00+00:00"
 
 
 async def test_get_states_parses_shared_client_states() -> None:

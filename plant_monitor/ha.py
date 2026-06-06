@@ -100,7 +100,14 @@ def parse_entity_state(raw: dict[str, Any]) -> EntityState:
         attributes=raw.get("attributes") or {},
         last_changed=_parse_datetime(raw.get("last_changed")),
         last_updated=_parse_datetime(raw.get("last_updated")),
+        last_reported=_parse_optional_datetime(raw.get("last_reported")),
     )
+
+
+def _parse_optional_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _parse_datetime(value: str | None) -> datetime:

@@ -202,7 +202,7 @@ def record_samples(
             value = numeric_state(state)
             if state is None or value is None:
                 continue
-            timestamp = _aware(state.last_updated)
+            timestamp = _aware(state.freshness_timestamp)
             key = (entity_id, timestamp.isoformat(), value)
             if key in existing:
                 continue
@@ -250,11 +250,13 @@ def _freshness_candidates(
                 )
             )
             continue
-        age_hours = (now - _aware(state.last_updated)).total_seconds() / 3600
+        age_hours = (now - _aware(state.freshness_timestamp)).total_seconds() / 3600
         orange_hours = (
             BATTERY_STALE_ORANGE_HOURS if sensor == "battery" else STALE_ORANGE_HOURS
         )
         red_hours = BATTERY_STALE_RED_HOURS if sensor == "battery" else STALE_RED_HOURS
+        if sensor == "battery" and _has_fresh_non_battery_sensor(plant, states, now):
+            continue
         if age_hours >= red_hours:
             candidates.append(
                 ConditionCandidate(
@@ -282,6 +284,23 @@ def _freshness_candidates(
                 )
             )
     return candidates
+
+
+def _has_fresh_non_battery_sensor(
+    plant: PlantConfig,
+    states: dict[str, EntityState],
+    now: datetime,
+) -> bool:
+    for sensor, entity_id in _plant_sensor_entities(plant):
+        if sensor == "battery":
+            continue
+        state = states.get(entity_id)
+        if state is None:
+            continue
+        age = now - _aware(state.freshness_timestamp)
+        if age < timedelta(hours=STALE_ORANGE_HOURS):
+            return True
+    return False
 
 
 def _stale_message(sensor: str, hours: float) -> str:

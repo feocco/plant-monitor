@@ -25,7 +25,7 @@ def numeric_state(state: EntityState | None) -> float | None:
 
 
 def staleness(state: EntityState, now: datetime) -> Severity:
-    age = now - aware(state.last_updated)
+    age = now - aware(state.freshness_timestamp)
     if age >= timedelta(hours=STALE_RED_HOURS):
         return Severity.RED
     if age >= timedelta(hours=STALE_ORANGE_HOURS):
@@ -35,7 +35,7 @@ def staleness(state: EntityState, now: datetime) -> Severity:
 
 def staleness_for_sensor(sensor: str, state: EntityState, now: datetime) -> Severity:
     if sensor == "battery":
-        age = now - aware(state.last_updated)
+        age = now - aware(state.freshness_timestamp)
         if age >= timedelta(hours=BATTERY_STALE_RED_HOURS):
             return Severity.RED
         if age >= timedelta(hours=BATTERY_STALE_ORANGE_HOURS):

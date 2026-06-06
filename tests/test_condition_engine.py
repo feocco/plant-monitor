@@ -77,6 +77,31 @@ def test_missing_sensor_activates_unavailable_alert_after_hold_window() -> None:
     assert due_phone_conditions(runtime, plant.id, 24, NOW + timedelta(minutes=10))
 
 
+def test_stale_battery_is_suppressed_when_other_plant_sensors_are_fresh() -> None:
+    plant = _plant("boston_fern")
+    runtime = RuntimeState()
+    now = NOW + timedelta(days=11)
+    states = _states(updated=now)
+    states["sensor.battery"] = _state("sensor.battery", 100, NOW)
+
+    update_conditions([plant], states, runtime, now)
+
+    assert "plant_boston_fern:battery_stale:red" not in runtime.condition_records
+    assert active_condition_records(runtime) == []
+
+
+def test_stale_battery_alerts_when_the_rest_of_the_plant_is_stale() -> None:
+    plant = _plant("boston_fern")
+    runtime = RuntimeState()
+    now = NOW + timedelta(days=11)
+    states = _states(updated=NOW)
+
+    update_conditions([plant], states, runtime, now)
+
+    active = active_condition_records(runtime)
+    assert "plant_boston_fern:battery_stale:red" in [record.key for record in active]
+
+
 def test_active_condition_does_not_retrigger_for_numeric_drift_until_repeat() -> None:
     plant = _plant("ficus_altissima")
     runtime = RuntimeState()

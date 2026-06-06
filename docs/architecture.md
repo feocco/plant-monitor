@@ -99,6 +99,10 @@ Phone alerts are intentionally quiet:
 - Candidates become active only after their hold window passes.
 - Missing or `unavailable` sensor states must persist for 10 minutes before
   they can trigger a phone alert, which filters Home Assistant restart noise.
+- Freshness uses Home Assistant `last_reported` when available, falling back to
+  `last_updated`. Battery percentage can remain unchanged for a long time, so a
+  stale battery timestamp is ignored when another sensor for the same plant is
+  reporting fresh data; low-battery percentage alerts still apply.
 - Notifications send on activation, repeat cadence, or severity-relevant active
   conditions.
 - Numeric drift inside the same active condition does not keep retriggering.

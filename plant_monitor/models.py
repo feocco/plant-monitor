@@ -94,6 +94,11 @@ class EntityState:
     attributes: dict[str, Any]
     last_changed: datetime
     last_updated: datetime
+    last_reported: datetime | None = None
+
+    @property
+    def freshness_timestamp(self) -> datetime:
+        return self.last_reported or self.last_updated
 
 
 @dataclass(frozen=True)
