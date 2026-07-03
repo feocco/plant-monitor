@@ -50,6 +50,11 @@ SERVICE_PORT=8088
 SERVICE_CALLBACK_TOKEN=replace_with_random_string
 ```
 
+`SERVICE_CALLBACK_TOKEN` protects `POST /water/{plant_id}` when it is non-empty.
+Clients may supply the token with either the `X-Plant-Monitor-Token` header or
+the `token` query parameter. `GET /health`, `GET /docs`, and
+`GET /openapi.json` do not require the callback token.
+
 Optional LLM notification wording:
 
 ```bash

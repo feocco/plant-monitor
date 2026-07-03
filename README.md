@@ -6,6 +6,10 @@ It reads plant state from Home Assistant, keeps recent local state, turns
 sustained problems into plant conditions, sends quiet phone notifications, and
 only runs watering pumps after explicit confirmation.
 
+The service also exposes a small operational HTTP surface on port `8088`:
+`/health`, `/docs`, `/openapi.json`, and the guarded watering callback
+`/water/{plant_id}`.
+
 ## Quick Start
 
 ```bash
@@ -74,6 +78,7 @@ NAS runtime configuration and deployment live outside this repo in
 
 - [Configuration](docs/configuration.md)
 - [Architecture](docs/architecture.md)
+- [Security](docs/security.md)
 
 ## Tests
 

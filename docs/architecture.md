@@ -88,7 +88,7 @@ active condition should notify now.
 - `plant_monitor/notification_planner.py`: decides which active conditions should notify now.
 - `plant_monitor/notify.py`: digest and phone notification formatting/sending.
 - `plant_monitor/watering.py`: watering guard, pump execution, watering lookbacks.
-- `plant_monitor/web.py`: health and callback server.
+- `plant_monitor/web.py`: health, service docs, OpenAPI, and callback server.
 - `plant_monitor/runtime_state.py`: persisted `data/state.json`.
 
 ## Alert Model
@@ -126,6 +126,17 @@ Watering is guarded:
   are suppressed longer.
 - The service schedules 1-hour and 4-hour lookbacks to report whether moisture
   or humidity changed after watering.
+
+## Service HTTP Surface
+
+The built-in `aiohttp` server exposes four routes:
+
+- `GET /health`: unchanged readiness response for probes and local checks.
+- `GET /docs`: browser-friendly operational docs for the service surface.
+- `GET /openapi.json`: OpenAPI 3.1 contract for the same surface.
+- `POST /water/{plant_id}`: guarded watering callback. When
+  `SERVICE_CALLBACK_TOKEN` is set, callers must provide either
+  `X-Plant-Monitor-Token` or the `token` query parameter.
 
 Do not restart the container while a pump is actively running. Outside an active
 watering event, restart is expected to be safe.
