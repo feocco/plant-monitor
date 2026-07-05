@@ -64,17 +64,29 @@ def test_transient_missing_sensor_does_not_activate_unavailable_alert() -> None:
 def test_missing_sensor_activates_unavailable_alert_after_hold_window() -> None:
     plant = _plant("golden_pothos")
     runtime = RuntimeState()
-    missing_battery = _states(updated=NOW)
-    missing_battery.pop("sensor.battery")
 
-    update_conditions([plant], missing_battery, runtime, NOW)
-    update_conditions([plant], missing_battery, runtime, NOW + timedelta(minutes=10))
+    update_conditions([plant], _states_without_battery(NOW), runtime, NOW)
+    update_conditions(
+        [plant],
+        _states_without_battery(NOW + timedelta(hours=11, minutes=59)),
+        runtime,
+        NOW + timedelta(hours=11, minutes=59),
+    )
+
+    assert active_condition_records(runtime) == []
+
+    update_conditions(
+        [plant],
+        _states_without_battery(NOW + timedelta(hours=12)),
+        runtime,
+        NOW + timedelta(hours=12),
+    )
 
     active = active_condition_records(runtime)
     assert [record.key for record in active] == [
         "plant_golden_pothos:battery_unavailable:red"
     ]
-    assert due_phone_conditions(runtime, plant.id, 24, NOW + timedelta(minutes=10))
+    assert due_phone_conditions(runtime, plant.id, 24, NOW + timedelta(hours=12))
 
 
 def test_stale_battery_is_suppressed_when_other_plant_sensors_are_fresh() -> None:
@@ -282,6 +294,12 @@ def _states(
     }
     if brightness is not None:
         states["sensor.brightness"] = _state("sensor.brightness", brightness, updated)
+    return states
+
+
+def _states_without_battery(updated: datetime) -> dict[str, EntityState]:
+    states = _states(updated=updated)
+    states.pop("sensor.battery")
     return states
 
 

@@ -42,6 +42,10 @@ ALERT_SNOOZE_HOURS=24
 ALERT_REPEAT_HOURS=24
 ```
 
+Unavailable, unknown, or missing sensor states must persist for 12 hours before
+they can send an urgent phone notification. This keeps short IoT connectivity
+dropouts from paging like real plant-health problems.
+
 Callback and health server:
 
 ```bash

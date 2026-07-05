@@ -21,7 +21,7 @@ SOGGY_HOLD = timedelta(hours=72)
 TEMPERATURE_MILD_HOLD = timedelta(hours=24)
 TEMPERATURE_EXTREME_HOLD = timedelta(hours=2)
 HUMIDITY_HOLD = timedelta(hours=24)
-UNAVAILABLE_HOLD = timedelta(minutes=10)
+UNAVAILABLE_HOLD = timedelta(hours=12)
 HARD_TEMPERATURE_LOW = 50.0
 HARD_TEMPERATURE_HIGH = 95.0
 HIGH_BRIGHTNESS_LX = 2000.0
