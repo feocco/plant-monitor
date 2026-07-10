@@ -10,7 +10,7 @@ from typing import Any
 from plant_monitor.config import load_service_config, write_discovered_config
 from plant_monitor.ha import HomeAssistantClient
 from plant_monitor.logging_config import setup_logging
-from plant_monitor.models import EntityState, PlantConfig
+from plant_monitor.models import EntityState, PlantConfig, SpeciesThresholds
 
 LOGGER = logging.getLogger(__name__)
 PLANT_DOMAIN = "plant."
@@ -29,6 +29,7 @@ SPECIES_HINTS = {
     "ficus_altissima": ("ficus", "altissma", "altissima", "rubber"),
     "golden_pothos": ("pothos",),
     "peperomia_jelly": ("peperomia", "jelly"),
+    "wandering_dude": ("wandering dude", "tradescantia", "wandering"),
 }
 
 async def discover(output_path: str | None = None, write: bool = False) -> None:
@@ -38,10 +39,25 @@ async def discover(output_path: str | None = None, write: bool = False) -> None:
     await ha.connect()
     try:
         states = await ha.get_states()
+        entity_registry = _response_result(
+            await ha.request({"type": "config/entity_registry/list"})
+        )
+        device_registry = _response_result(
+            await ha.request({"type": "config/device_registry/list"})
+        )
+        area_registry = _response_result(
+            await ha.request({"type": "config/area_registry/list"})
+        )
     finally:
         await ha.close()
 
-    plants = _discover_plants(states, _existing_plants(config.config_path))
+    plants = _discover_plants(
+        states,
+        _existing_plants(config.config_path),
+        entity_registry=entity_registry,
+        device_registry=device_registry,
+        area_registry=area_registry,
+    )
     target = Path(output_path or (config.config_path if write else "plants.discovered.yaml"))
     write_discovered_config(target, plants)
     LOGGER.info("Wrote %s plant objects to %s", len(plants), target)
@@ -52,6 +68,10 @@ async def discover(output_path: str | None = None, write: bool = False) -> None:
 def _discover_plants(
     states: dict[str, EntityState],
     existing_plants: dict[str, PlantConfig] | None = None,
+    *,
+    entity_registry: list[dict[str, Any]] | None = None,
+    device_registry: list[dict[str, Any]] | None = None,
+    area_registry: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     existing_plants = existing_plants or {}
     plant_states = sorted(
@@ -59,19 +79,163 @@ def _discover_plants(
         key=lambda state: state.entity_id,
     )
     raw_sensors = [state for state in states.values() if state.entity_id.startswith(SENSOR_DOMAINS)]
-    return [_plant_object(plant_state, raw_sensors, existing_plants.get(_plant_id(plant_state))) for plant_state in plant_states]
+    plants = [_plant_config_payload(plant) for plant in existing_plants.values()]
+    plants.extend(
+        _plant_object(plant_state, raw_sensors)
+        for plant_state in plant_states
+        if _plant_id(plant_state) not in existing_plants
+    )
+    if entity_registry is None or device_registry is None:
+        return plants
+    plants.extend(
+        _sensor_only_plants(
+            states,
+            existing_plants,
+            plants,
+            entity_registry,
+            device_registry,
+            area_registry or [],
+        )
+    )
+    return plants
+
+
+def _sensor_only_plants(
+    states: dict[str, EntityState],
+    existing_plants: dict[str, PlantConfig],
+    discovered_plants: list[dict[str, Any]],
+    entity_registry: list[dict[str, Any]],
+    device_registry: list[dict[str, Any]],
+    area_registry: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    entity_rows = {
+        row.get("entity_id"): row
+        for row in entity_registry
+        if isinstance(row.get("entity_id"), str)
+    }
+    entities_by_device: dict[str, list[dict[str, Any]]] = {}
+    for row in entity_registry:
+        device_id = row.get("device_id")
+        if not isinstance(device_id, str) or row.get("disabled_by") is not None:
+            continue
+        entities_by_device.setdefault(device_id, []).append(row)
+
+    claimed_entities = _configured_entity_ids(existing_plants.values())
+    for plant in discovered_plants:
+        claimed_entities.update((plant.get("sensors") or {}).values())
+        plant_entity = plant.get("plant_entity")
+        if isinstance(plant_entity, str):
+            claimed_entities.add(plant_entity)
+    claimed_devices = {
+        entity_rows[entity_id].get("device_id")
+        for entity_id in claimed_entities
+        if entity_id in entity_rows
+    }
+    area_names = {
+        row.get("area_id"): row.get("name")
+        for row in area_registry
+        if isinstance(row.get("area_id"), str)
+    }
+
+    proposals: list[dict[str, Any]] = []
+    for device in device_registry:
+        device_id = device.get("id")
+        if not isinstance(device_id, str) or device_id in claimed_devices:
+            continue
+        rows = entities_by_device.get(device_id, [])
+        moisture = _device_sensor(rows, states, "moisture")
+        if moisture is None:
+            continue
+        device_name = str(device.get("name_by_user") or device.get("name") or device_id)
+        name = _clean_sensor_name(device_name)
+        location = str(area_names.get(device.get("area_id")) or "Unknown")
+        sensors = {"moisture": moisture}
+        for kind in ("temperature", "battery"):
+            entity_id = _device_sensor(rows, states, kind)
+            if entity_id:
+                sensors[kind] = entity_id
+        proposals.append(
+            {
+                "id": _sensor_plant_id(name, location),
+                "plant_entity": None,
+                "name": name,
+                "location": location,
+                "species": _species_for(f"{name} {location}".lower()),
+                "sensors": sensors,
+            }
+        )
+    return sorted(proposals, key=lambda plant: plant["id"])
+
+
+def _configured_entity_ids(plants: object) -> set[str]:
+    entity_ids: set[str] = set()
+    for plant in plants:
+        if plant.plant_entity:
+            entity_ids.add(plant.plant_entity)
+        for entity_id in vars(plant.entities).values():
+            if entity_id:
+                entity_ids.add(entity_id)
+    return entity_ids
+
+
+def _device_sensor(
+    rows: list[dict[str, Any]],
+    states: dict[str, EntityState],
+    kind: str,
+) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    for row in rows:
+        entity_id = row.get("entity_id")
+        if not isinstance(entity_id, str) or not entity_id.startswith("sensor."):
+            continue
+        state = states.get(entity_id)
+        if state is None:
+            continue
+        device_class = str(state.attributes.get("device_class") or "")
+        original_name = str(row.get("original_name") or "").lower()
+        if kind == "moisture" and device_class == "moisture":
+            preferred = 0 if "soil_moisture" in entity_id or original_name == "soil moisture" else 1
+            candidates.append((preferred, entity_id))
+        elif kind == "temperature" and device_class == "temperature":
+            candidates.append((0, entity_id))
+        elif kind == "battery" and device_class == "battery":
+            candidates.append((0, entity_id))
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
+def _clean_sensor_name(value: str) -> str:
+    return re.sub(r"\s+soil sensor$", "", value, flags=re.IGNORECASE).strip()
+
+
+def _sensor_plant_id(name: str, location: str) -> str:
+    name_slug = _slug(name)
+    location_slug = _slug(location)
+    if location_slug and location_slug not in name_slug:
+        return f"{location_slug}_{name_slug}"
+    return name_slug
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", value.lower())).strip("_")
+
+
+def _response_result(response: dict[str, Any]) -> list[dict[str, Any]]:
+    result = response.get("result", response)
+    if not isinstance(result, list):
+        raise ValueError("Home Assistant registry response was not a list")
+    return result
 
 
 def _plant_object(
     plant_state: EntityState,
     raw_sensors: list[EntityState],
-    existing_plant: PlantConfig | None,
 ) -> dict[str, Any]:
     plant_id = _plant_id(plant_state)
     text = _search_text(plant_state)
     species = _species_for(text)
     sensors = _sensors_for(plant_state, raw_sensors)
-    watering = _watering_from_existing(existing_plant)
     payload: dict[str, Any] = {
         "id": plant_id,
         "plant_entity": plant_state.entity_id,
@@ -84,8 +248,59 @@ def _plant_object(
     thresholds = _thresholds_for(plant_state)
     if thresholds:
         payload["thresholds"] = thresholds
+    return payload
+
+
+def _plant_config_payload(plant: PlantConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "id": plant.id,
+        "plant_entity": plant.plant_entity,
+        "name": plant.name,
+        "location": plant.location,
+        "species": plant.species,
+    }
+    sensors = {
+        kind: entity_id
+        for kind, entity_id in (
+            ("moisture", plant.entities.moisture),
+            ("temperature", plant.entities.temperature),
+            ("humidity", plant.entities.humidity),
+            ("battery", plant.entities.battery),
+            ("conductivity", plant.entities.conductivity),
+            ("brightness", plant.entities.brightness),
+        )
+        if entity_id
+    }
+    if sensors:
+        payload["sensors"] = sensors
+    watering = _watering_from_existing(plant)
     if watering:
         payload["watering"] = watering
+    if plant.thresholds is not None:
+        payload["thresholds"] = _threshold_config(plant.thresholds)
+    return payload
+
+
+def _threshold_config(thresholds: SpeciesThresholds) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for kind in ("moisture", "temperature", "humidity", "conductivity", "brightness"):
+        threshold_range = getattr(thresholds, kind)
+        values = {
+            field: value
+            for field, value in (
+                ("min_green", threshold_range.min_green),
+                ("min_orange", threshold_range.min_orange),
+                ("max_green", threshold_range.max_green),
+                ("max_orange", threshold_range.max_orange),
+            )
+            if value is not None
+        }
+        if values:
+            payload[kind] = values
+    payload["battery"] = {
+        "orange": thresholds.battery_orange,
+        "red": thresholds.battery_red,
+    }
     return payload
 
 

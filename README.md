@@ -30,16 +30,18 @@ values described in [Configuration](docs/configuration.md).
 
 ## Discovery
 
-Discovery reads live Home Assistant `plant.*` entities and related sensors, then
-writes a proposed config.
+Discovery reads live Home Assistant `plant.*` entities and related sensors. It
+also groups unmatched soil sensors by physical Home Assistant device and writes
+sensor-only plant proposals.
 
 ```bash
 # Writes plants.discovered.yaml by default.
 plant discover
 ```
 
-Review `plants.discovered.yaml` before replacing `plants.yaml`. The reviewed
-`plants.yaml` file is the source of truth for normal runs.
+Review `plants.discovered.yaml` before replacing `plants.yaml`. Existing
+reviewed plants are preserved and new sensor devices are appended as proposals.
+The reviewed `plants.yaml` file is the source of truth for normal runs.
 
 ## Common Commands
 

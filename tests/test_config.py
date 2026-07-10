@@ -112,3 +112,14 @@ def test_outdoor_threshold_profiles_have_expected_moisture_bands() -> None:
             moisture.max_green,
             moisture.max_orange,
         ) == bands
+
+
+def test_wandering_dude_profile_has_expected_moisture_band() -> None:
+    moisture = SPECIES_THRESHOLDS["wandering_dude"].moisture
+
+    assert (
+        moisture.min_green,
+        moisture.min_orange,
+        moisture.max_green,
+        moisture.max_orange,
+    ) == (25, 15, 75, 85)

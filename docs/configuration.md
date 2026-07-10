@@ -126,6 +126,12 @@ plant discover
 Discovery writes `plants.discovered.yaml` by default. Review the proposed
 mappings before copying them into `plants.yaml`.
 
+Discovery uses Home Assistant `plant.*` entities when present. It also groups
+unmatched moisture, temperature, and battery entities by physical Home
+Assistant device to propose sensor-only plants. Existing reviewed entries are
+preserved; discovery appends devices that are not already represented by a
+configured entity.
+
 Use `--write` only when you intentionally want discovery to replace the
 configured plant file:
 

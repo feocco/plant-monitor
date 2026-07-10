@@ -44,6 +44,10 @@ MOISTURE_LOW_HOLDS = {
         Severity.ORANGE: timedelta(hours=48),
         Severity.RED: timedelta(hours=72),
     },
+    "wandering_dude": {
+        Severity.ORANGE: timedelta(hours=24),
+        Severity.RED: timedelta(hours=48),
+    },
     "outdoor_mixed_vegetable_container": {
         Severity.ORANGE: timedelta(hours=6),
         Severity.RED: timedelta(hours=12),
